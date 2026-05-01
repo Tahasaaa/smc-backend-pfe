@@ -1,0 +1,48 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# Virtual environments
+venv/
+.env/
+.venv/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# Django local files
+*.log
+db.sqlite3
+media/
+staticfiles/
+
+# Backup files created during DB split
+*_backup.json
+*_backup_utf8.json
+*.dump
+*.sql
+*.bak
+
+# Large data files
+*.csv
+*.xlsx
+*.xls
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Python tools
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
