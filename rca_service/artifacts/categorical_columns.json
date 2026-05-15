@@ -1,0 +1,20 @@
+[
+  "eds_pilote",
+  "ticket_text",
+  "origine",
+  "etat",
+  "type_ticket",
+  "priorite",
+  "identifiant_n_1",
+  "nom_du_site",
+  "priorite_texte",
+  "mapping_source",
+  "site_name",
+  "region",
+  "active",
+  "incident_match_source",
+  "incident_mapping_confidence",
+  "incident_status",
+  "worst_priority_code",
+  "worst_priority_text"
+]

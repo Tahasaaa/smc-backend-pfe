@@ -1,0 +1,425 @@
+{
+  "status": "ok",
+  "evaluation_type": "feature_group_neutralization_ablation",
+  "evaluated_at_utc": "2026-05-05T10:28:47.698468+00:00",
+  "dataset": {
+    "rows": 2043,
+    "feature_count": 85,
+    "target_column": "famille_de_problemes",
+    "classes": [
+      "Performance",
+      "Préventif",
+      "Radio Access",
+      "Transmission"
+    ],
+    "class_distribution": {
+      "Performance": 537,
+      "Préventif": 550,
+      "Radio Access": 411,
+      "Transmission": 545
+    }
+  },
+  "split": {
+    "test_size": 0.2,
+    "random_state": 42,
+    "train_rows": 1634,
+    "test_rows": 409
+  },
+  "impact_summary": {
+    "baseline_all_features": {
+      "accuracy": 1.0,
+      "accuracy_drop_vs_baseline": 0.0,
+      "log_loss": 0.004655,
+      "log_loss_increase_vs_baseline": 0.0
+    },
+    "without_priority_features": {
+      "accuracy": 0.665037,
+      "accuracy_drop_vs_baseline": 0.334963,
+      "log_loss": 1.019782,
+      "log_loss_increase_vs_baseline": 1.015127
+    },
+    "without_text_features": {
+      "accuracy": 1.0,
+      "accuracy_drop_vs_baseline": 0.0,
+      "log_loss": 0.006066,
+      "log_loss_increase_vs_baseline": 0.001411
+    },
+    "without_kpi_engineering_features": {
+      "accuracy": 1.0,
+      "accuracy_drop_vs_baseline": 0.0,
+      "log_loss": 0.00549,
+      "log_loss_increase_vs_baseline": 0.000835
+    }
+  },
+  "groups": {
+    "baseline_all_features": {
+      "description": "All features available.",
+      "neutralized_feature_count": 0,
+      "neutralized_features": [],
+      "metrics": {
+        "accuracy": 1.0,
+        "balanced_accuracy": 1.0,
+        "log_loss": 0.004655,
+        "classification_report": {
+          "Performance": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 108.0
+          },
+          "Préventif": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 110.0
+          },
+          "Radio Access": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 82.0
+          },
+          "Transmission": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 109.0
+          },
+          "accuracy": 1.0,
+          "macro avg": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 409.0
+          },
+          "weighted avg": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 409.0
+          }
+        },
+        "confusion_matrix": {
+          "labels": [
+            "Performance",
+            "Préventif",
+            "Radio Access",
+            "Transmission"
+          ],
+          "matrix": [
+            [
+              108,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              110,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              82,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              109
+            ]
+          ]
+        }
+      }
+    },
+    "without_priority_features": {
+      "description": "Priority-related features are neutralized at test time.",
+      "neutralized_feature_count": 4,
+      "neutralized_features": [
+        "priorite",
+        "priorite_texte",
+        "worst_priority_code",
+        "worst_priority_text"
+      ],
+      "metrics": {
+        "accuracy": 0.665037,
+        "balanced_accuracy": 0.640584,
+        "log_loss": 1.019782,
+        "classification_report": {
+          "Performance": {
+            "precision": 0.7956989247311828,
+            "recall": 0.6851851851851852,
+            "f1-score": 0.736318407960199,
+            "support": 108.0
+          },
+          "Préventif": {
+            "precision": 0.6022727272727273,
+            "recall": 0.9636363636363636,
+            "f1-score": 0.7412587412587412,
+            "support": 110.0
+          },
+          "Radio Access": {
+            "precision": 0.92,
+            "recall": 0.2804878048780488,
+            "f1-score": 0.42990654205607476,
+            "support": 82.0
+          },
+          "Transmission": {
+            "precision": 0.6,
+            "recall": 0.6330275229357798,
+            "f1-score": 0.6160714285714286,
+            "support": 109.0
+          },
+          "accuracy": 0.6650366748166259,
+          "macro avg": {
+            "precision": 0.7294929130009775,
+            "recall": 0.6405842191588444,
+            "f1-score": 0.630888779961611,
+            "support": 409.0
+          },
+          "weighted avg": {
+            "precision": 0.7164437258458869,
+            "recall": 0.6650366748166259,
+            "f1-score": 0.644168635112584,
+            "support": 409.0
+          }
+        },
+        "confusion_matrix": {
+          "labels": [
+            "Performance",
+            "Préventif",
+            "Radio Access",
+            "Transmission"
+          ],
+          "matrix": [
+            [
+              74,
+              31,
+              0,
+              3
+            ],
+            [
+              4,
+              106,
+              0,
+              0
+            ],
+            [
+              4,
+              12,
+              23,
+              43
+            ],
+            [
+              11,
+              27,
+              2,
+              69
+            ]
+          ]
+        }
+      }
+    },
+    "without_text_features": {
+      "description": "Ticket text / combined text features are neutralized at test time.",
+      "neutralized_feature_count": 2,
+      "neutralized_features": [
+        "ticket_text",
+        "combined_text"
+      ],
+      "metrics": {
+        "accuracy": 1.0,
+        "balanced_accuracy": 1.0,
+        "log_loss": 0.006066,
+        "classification_report": {
+          "Performance": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 108.0
+          },
+          "Préventif": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 110.0
+          },
+          "Radio Access": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 82.0
+          },
+          "Transmission": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 109.0
+          },
+          "accuracy": 1.0,
+          "macro avg": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 409.0
+          },
+          "weighted avg": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 409.0
+          }
+        },
+        "confusion_matrix": {
+          "labels": [
+            "Performance",
+            "Préventif",
+            "Radio Access",
+            "Transmission"
+          ],
+          "matrix": [
+            [
+              108,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              110,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              82,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              109
+            ]
+          ]
+        }
+      }
+    },
+    "without_kpi_engineering_features": {
+      "description": "KPI, engineering, and timing context features are neutralized at test time.",
+      "neutralized_feature_count": 22,
+      "neutralized_features": [
+        "kpi_3g_cssr_ps",
+        "kpi_3g_shosr",
+        "kpi_3g_throughput",
+        "kpi_3g_dropcall_cs",
+        "kpi_3g_cs_rab_setup_sr",
+        "kpi_3g_cs_interrat_ho_sr",
+        "incident_potential",
+        "matched_incident_count",
+        "incident_mapping_confidence",
+        "azimuth",
+        "antheight",
+        "mechtilt",
+        "electilt",
+        "frequency_band",
+        "max_power",
+        "pilot_power",
+        "actual_load_dl",
+        "beam_azimuth",
+        "engineering_record_count",
+        "minutes_to_ack",
+        "minutes_to_repair",
+        "minutes_to_close"
+      ],
+      "metrics": {
+        "accuracy": 1.0,
+        "balanced_accuracy": 1.0,
+        "log_loss": 0.00549,
+        "classification_report": {
+          "Performance": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 108.0
+          },
+          "Préventif": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 110.0
+          },
+          "Radio Access": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 82.0
+          },
+          "Transmission": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 109.0
+          },
+          "accuracy": 1.0,
+          "macro avg": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 409.0
+          },
+          "weighted avg": {
+            "precision": 1.0,
+            "recall": 1.0,
+            "f1-score": 1.0,
+            "support": 409.0
+          }
+        },
+        "confusion_matrix": {
+          "labels": [
+            "Performance",
+            "Préventif",
+            "Radio Access",
+            "Transmission"
+          ],
+          "matrix": [
+            [
+              108,
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              110,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              82,
+              0
+            ],
+            [
+              0,
+              0,
+              0,
+              109
+            ]
+          ]
+        }
+      }
+    }
+  },
+  "interpretation_notes": [
+    "This is a feature-group neutralization ablation, not a full retraining ablation.",
+    "The model is trained with all features, then selected feature groups are neutralized at test time.",
+    "If accuracy drops when a feature group is neutralized, the model depends on that group.",
+    "This helps detect whether the RCA model relies too heavily on priority, text, or KPI/engineering features."
+  ]
+}

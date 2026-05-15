@@ -1,0 +1,5659 @@
+
+
+==================== rca_service\app\main.py ====================
+
+from __future__ import annotations
+
+import logging
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.db import engine
+from app.models import Base
+from app.routers.backend_integration import router as backend_integration_router
+from app.routers.demo_seed import router as demo_seed_router
+from app.routers.explainability import router as explainability_router
+from app.routers.rca import router as rca_router
+from app.routers.training import router as training_router
+from app.services.ml_service import load_model_artifacts
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+app = FastAPI(
+    title="V2 RCA API",
+    description="Incident-level RCA assistant for telecom incidents",
+    version="2.0.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.on_event("startup")
+def startup_event() -> None:
+    logger.info("Starting V2 RCA API...")
+
+    Base.metadata.create_all(bind=engine)
+    logger.info("Database initialized.")
+
+    info = load_model_artifacts()
+    logger.info(
+        "Model artifacts loaded successfully. classes=%s feature_count=%s trained_at=%s",
+        info.get("classes"),
+        info.get("feature_count"),
+        info.get("trained_at_utc"),
+    )
+
+
+@app.get("/")
+def root() -> dict:
+    return {
+        "message": "V2 RCA API is running",
+        "status": "ok",
+    }
+
+
+@app.get("/health")
+def health() -> dict:
+    return {
+        "status": "healthy",
+        "service": "v2_rca_api",
+    }
+
+
+app.include_router(rca_router)
+app.include_router(training_router)
+app.include_router(explainability_router)
+app.include_router(backend_integration_router)
+app.include_router(demo_seed_router)
+
+
+==================== rca_service\app\db.py ====================
+
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+from sqlalchemy import create_engine
+from sqlalchemy.orm import declarative_base, sessionmaker
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
+
+DB_NAME = os.getenv("RCA_DB_NAME", "v2_rca_db")
+DB_USER = os.getenv("RCA_DB_USER", "postgres")
+DB_PASSWORD = os.getenv("RCA_DB_PASSWORD", "")
+DB_HOST = os.getenv("RCA_DB_HOST", "127.0.0.1")
+DB_PORT = os.getenv("RCA_DB_PORT", "5432")
+
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}",
+)
+
+engine = create_engine(
+    DATABASE_URL,
+    echo=False,
+    pool_pre_ping=True,
+)
+
+SessionLocal = sessionmaker(
+    autocommit=False,
+    autoflush=False,
+    bind=engine,
+)
+
+Base = declarative_base()
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+==================== rca_service\app\models.py ====================
+
+from sqlalchemy import Column, DateTime, Float, Integer, String, Text, JSON
+from sqlalchemy.sql import func
+
+from app.db import Base
+
+
+class RCAAnalysis(Base):
+    __tablename__ = "rca_analyses"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticket_id = Column(String, unique=True, index=True, nullable=False)
+
+    site_id = Column(String, nullable=True)
+    site_name = Column(String, nullable=True)
+    region = Column(String, nullable=True)
+    priority = Column(String, nullable=True)
+    description = Column(Text, nullable=True)
+
+    predicted_family = Column(String, nullable=False)
+    confidence = Column(Float, nullable=False)
+
+    top3_hypotheses_json = Column(JSON, nullable=False)
+    kpi_insights_json = Column(JSON, nullable=False)
+    recommended_checks_json = Column(JSON, nullable=False)
+    recommended_actions_json = Column(JSON, nullable=False)
+
+    draft_report = Column(Text, nullable=False)
+    status = Column(String, default="analysis_ready", nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class RCAApproval(Base):
+    __tablename__ = "rca_approvals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticket_id = Column(String, index=True, nullable=False)
+
+    approved_family = Column(String, nullable=False)
+    approved_checks_json = Column(JSON, nullable=False, default=list)
+    approved_actions_json = Column(JSON, nullable=False, default=list)
+    engineer_notes = Column(Text, nullable=True)
+
+    approved_by = Column(String, nullable=False)
+    approval_status = Column(String, default="approved", nullable=False)
+    approved_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class RCAReport(Base):
+    __tablename__ = "rca_reports"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticket_id = Column(String, unique=True, index=True, nullable=False)
+
+    report_id = Column(String, unique=True, nullable=False)
+    report_text = Column(Text, nullable=False)
+    report_status = Column(String, default="generated", nullable=False)
+    generated_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class RunbookEntry(Base):
+    __tablename__ = "runbook_entries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticket_id = Column(String, unique=True, index=True, nullable=False)
+
+    site_id = Column(String, nullable=True)
+    site_name = Column(String, nullable=True)
+    region = Column(String, nullable=True)
+
+    approved_family = Column(String, nullable=False)
+    incident_summary = Column(Text, nullable=True)
+    final_conclusion = Column(Text, nullable=True)
+
+    checks_json = Column(JSON, nullable=False, default=list)
+    actions_json = Column(JSON, nullable=False, default=list)
+    engineer_notes = Column(Text, nullable=True)
+
+    report_id = Column(String, nullable=True)
+    tags_json = Column(JSON, nullable=False, default=list)
+    is_reusable = Column(String, default="yes", nullable=False)
+    created_by = Column(String, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+==================== rca_service\app\schemas.py ====================
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Dict, List, Literal, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class HypothesisItem(BaseModel):
+    family: str
+    probability: float
+
+
+class AnalyzeIncidentRequest(BaseModel):
+    ticket_id: Optional[str] = None
+    ticket_text: str
+    site_id: Optional[str] = None
+    origine: Optional[str] = None
+    etat: Optional[str] = None
+    type_ticket: Optional[str] = None
+    priorite: Optional[str] = None
+    priorite_texte: Optional[str] = None
+    nom_du_site: Optional[str] = None
+    site_name: Optional[str] = None
+    region: Optional[str] = None
+    incident_status: Optional[str] = None
+    frequency_band: Optional[str] = None
+
+    date_debut: Optional[str] = None
+    date_d_acquittement: Optional[str] = None
+    date_de_reparation: Optional[str] = None
+    date_de_cloture: Optional[str] = None
+
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+
+    kpi_3g_cssr_ps: Optional[float] = None
+    kpi_3g_shosr: Optional[float] = None
+    kpi_3g_throughput: Optional[float] = None
+    kpi_3g_dropcall_cs: Optional[float] = None
+    kpi_3g_cs_rab_setup_sr: Optional[float] = None
+    kpi_3g_cs_interrat_ho_sr: Optional[float] = None
+
+    incident_potential: Optional[float] = None
+    matched_incident_count: Optional[float] = None
+    incident_mapping_confidence: Optional[float] = None
+    worst_priority_code: Optional[float] = None
+    engineering_record_count: Optional[float] = None
+
+    top_k: int = Field(default=3, ge=1, le=5)
+
+
+class AnalyzeIncidentResponse(BaseModel):
+    predicted_family: str
+    confidence: float
+    top_hypotheses: List[HypothesisItem]
+    ticket_id: str
+    analysis_status: str
+
+    kpi_insights: List[str] = Field(default_factory=list)
+    recommended_checks: List[str] = Field(default_factory=list)
+    recommended_actions: List[str] = Field(default_factory=list)
+    draft_report: Optional[str] = None
+
+    root_cause_summary: Dict[str, Any] = Field(default_factory=dict)
+    risk_if_not_fixed: Dict[str, Any] = Field(default_factory=dict)
+    charts: Dict[str, Any] = Field(default_factory=dict)
+    explainability_status: Dict[str, Any] = Field(default_factory=dict)
+
+
+class RCAApprovalRequest(BaseModel):
+    ticket_id: str
+    approved_by: str
+    approved_family: Optional[str] = None
+    approved_checks: List[str] = Field(default_factory=list)
+    approved_actions: List[str] = Field(default_factory=list)
+    engineer_notes: Optional[str] = None
+    approval_status: Literal["approved", "rejected"] = "approved"
+
+
+class RCAApprovalResponse(BaseModel):
+    ticket_id: str
+    approval_status: str
+    approved_family: str
+    approved_checks: List[str]
+    approved_actions: List[str]
+    engineer_notes: Optional[str] = None
+    approved_by: str
+    approved_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RCAReportGenerateRequest(BaseModel):
+    ticket_id: str
+
+
+class RCAReportResponse(BaseModel):
+    ticket_id: str
+    report_id: str
+    report_status: str
+    report_text: str
+    generated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RunbookPublishRequest(BaseModel):
+    ticket_id: str
+    created_by: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    is_reusable: str = "yes"
+
+
+class RunbookEntryResponse(BaseModel):
+    ticket_id: str
+    site_id: Optional[str] = None
+    site_name: Optional[str] = None
+    region: Optional[str] = None
+    approved_family: str
+    incident_summary: Optional[str] = None
+    final_conclusion: Optional[str] = None
+    checks: List[str] = Field(default_factory=list)
+    actions: List[str] = Field(default_factory=list)
+    engineer_notes: Optional[str] = None
+    report_id: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    is_reusable: str
+    created_by: Optional[str] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RunbookSearchResponse(BaseModel):
+    total: int
+    items: List[RunbookEntryResponse]
+
+class RCAAnalysisDetailResponse(BaseModel):
+    ticket_id: str
+    site_id: Optional[str] = None
+    site_name: Optional[str] = None
+    region: Optional[str] = None
+    priority: Optional[str] = None
+    description: Optional[str] = None
+
+    predicted_family: str
+    confidence: float
+    top_hypotheses: List[HypothesisItem] = Field(default_factory=list)
+
+    kpi_insights: List[str] = Field(default_factory=list)
+    recommended_checks: List[str] = Field(default_factory=list)
+    recommended_actions: List[str] = Field(default_factory=list)
+    draft_report: Optional[str] = None
+
+    analysis_status: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+==================== rca_service\app\routers\rca.py ====================
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Dict
+
+import pandas as pd
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+
+from app.db import get_db
+from app.schemas import (
+    AnalyzeIncidentRequest,
+    AnalyzeIncidentResponse,
+    HypothesisItem,
+    RCAAnalysisDetailResponse,
+    RCAApprovalRequest,
+    RCAApprovalResponse,
+    RCAReportGenerateRequest,
+    RCAReportResponse,
+    RunbookEntryResponse,
+    RunbookPublishRequest,
+    RunbookSearchResponse,
+)
+from app.services.ml_service import get_service, load_training_dataframe
+from app.services.persistence_service import (
+    create_or_update_report,
+    get_analysis_by_ticket_id,
+    get_report_by_ticket_id,
+    get_runbook_by_ticket_id,
+    publish_runbook,
+    search_runbooks,
+    upsert_analysis,
+    upsert_approval,
+)
+from app.services.report_service import (
+    build_draft_report,
+    build_kpi_insights,
+    build_recommended_actions,
+    build_recommended_checks,
+)
+from app.services.rca_enrichment_service import build_enriched_rca_payload
+
+
+router = APIRouter(prefix="/api/v2", tags=["RCA"])
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
+
+REQUIRED_ARTIFACTS = {
+    "model": "model.pkl",
+    "feature_columns": "feature_columns.json",
+    "numeric_columns": "numeric_columns.json",
+    "categorical_columns": "categorical_columns.json",
+    "all_null_columns": "all_null_columns.json",
+    "metadata": "model_metadata.json",
+}
+
+
+def _fix_mojibake_text(value: str) -> str:
+    try:
+        if "Ã" in value or "Â" in value:
+            return value.encode("latin1").decode("utf-8")
+    except UnicodeError:
+        pass
+
+    return value
+
+
+def _normalize_text_recursively(value: Any) -> Any:
+    if isinstance(value, str):
+        return _fix_mojibake_text(value)
+
+    if isinstance(value, list):
+        return [_normalize_text_recursively(item) for item in value]
+
+    if isinstance(value, dict):
+        return {
+            key: _normalize_text_recursively(item)
+            for key, item in value.items()
+        }
+
+    return value
+
+
+def _read_model_metadata() -> Dict[str, Any]:
+    metadata_file = ARTIFACTS_DIR / "model_metadata.json"
+
+    if not metadata_file.exists():
+        return {}
+
+    with metadata_file.open("r", encoding="utf-8") as file:
+        metadata = json.load(file)
+
+    return _normalize_text_recursively(metadata)
+
+
+def _artifact_status() -> Dict[str, Any]:
+    artifacts: Dict[str, Any] = {}
+
+    for artifact_key, filename in REQUIRED_ARTIFACTS.items():
+        path = ARTIFACTS_DIR / filename
+        artifacts[artifact_key] = {
+            "filename": filename,
+            "exists": path.exists(),
+            "size_bytes": path.stat().st_size if path.exists() else 0,
+        }
+
+    return artifacts
+
+
+def _to_json_safe_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    safe_payload: Dict[str, Any] = {}
+
+    for key, value in payload.items():
+        try:
+            if pd.isna(value):
+                safe_payload[key] = None
+                continue
+        except (TypeError, ValueError):
+            pass
+
+        if hasattr(value, "item"):
+            safe_payload[key] = value.item()
+        else:
+            safe_payload[key] = value
+
+    return safe_payload
+
+
+def _build_analysis_response(
+    saved,
+    result: Dict[str, Any],
+    kpi_insights: list[str],
+    recommended_checks: list[str],
+    recommended_actions: list[str],
+    draft_report: str,
+    enriched: Dict[str, Any],
+) -> AnalyzeIncidentResponse:
+    return AnalyzeIncidentResponse(
+        predicted_family=result["predicted_family"],
+        confidence=result["confidence"],
+        top_hypotheses=[
+            HypothesisItem(**item) for item in result["top_hypotheses"]
+        ],
+        ticket_id=saved.ticket_id,
+        analysis_status=saved.status,
+        kpi_insights=kpi_insights,
+        recommended_checks=recommended_checks,
+        recommended_actions=recommended_actions,
+        draft_report=draft_report,
+        root_cause_summary=enriched["root_cause_summary"],
+        risk_if_not_fixed=enriched["risk_if_not_fixed"],
+        charts=enriched["charts"],
+        explainability_status=enriched["explainability_status"],
+    )
+
+
+@router.get("/test")
+def test() -> Dict[str, str]:
+    return {"message": "router works"}
+
+
+@router.get("/model/info")
+def model_info() -> Dict[str, Any]:
+    service = get_service()
+
+    if not service.is_trained or service.model is None:
+        raise HTTPException(status_code=503, detail="Model artifacts are not loaded.")
+
+    classes = []
+    classifier = service.model.named_steps.get("classifier")
+    if classifier is not None and hasattr(classifier, "classes_"):
+        classes = classifier.classes_.tolist()
+
+    metadata = _read_model_metadata()
+    artifact_status = _artifact_status()
+
+    return {
+        "status": "ready",
+        "model_name": metadata.get("model_name", "v2_rca_model"),
+        "model_version": metadata.get("model_version"),
+        "trained_at_utc": metadata.get("trained_at_utc"),
+        "target_column": metadata.get("target_column", service.target_column),
+        "rows": metadata.get("rows"),
+        "classes": metadata.get("classes") or classes,
+        "runtime_classes": classes,
+        "feature_count": metadata.get(
+            "feature_count",
+            len(service.training_feature_columns),
+        ),
+        "numeric_feature_count": metadata.get(
+            "numeric_feature_count",
+            len(service.numeric_columns),
+        ),
+        "categorical_feature_count": metadata.get(
+            "categorical_feature_count",
+            len(service.categorical_columns),
+        ),
+        "text_column": metadata.get("text_column", service.text_column),
+        "all_null_columns": metadata.get(
+            "all_null_columns",
+            service.all_null_columns,
+        ),
+        "data_sources": metadata.get("data", {}).get("sources", []),
+        "artifact_status": artifact_status,
+        "training_notes": metadata.get("notes", []),
+    }
+
+
+@router.get("/dataset/tickets")
+def list_dataset_tickets(
+    q: str | None = Query(default=None),
+    family: str | None = Query(default=None),
+    priority: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> Dict[str, Any]:
+    try:
+        df = load_training_dataframe()
+
+        if family and "famille_de_problemes" in df.columns:
+            df = df[
+                df["famille_de_problemes"].astype(str).str.lower()
+                == family.lower()
+            ]
+
+        if priority and "priorite" in df.columns:
+            df = df[df["priorite"].astype(str).str.upper() == priority.upper()]
+
+        if q:
+            q_lower = q.lower()
+            searchable_columns = [
+                "ticket_id",
+                "site_id",
+                "ticket_text",
+                "nom_du_site",
+                "famille_de_problemes",
+                "priorite",
+                "priorite_texte",
+            ]
+            existing_columns = [
+                col for col in searchable_columns if col in df.columns
+            ]
+
+            if existing_columns:
+                mask = df[existing_columns].astype(str).apply(
+                    lambda col: col.str.lower().str.contains(q_lower, na=False)
+                ).any(axis=1)
+                df = df[mask]
+
+        total = int(len(df))
+        df = df.head(limit)
+
+        items = []
+
+        for _, row in df.iterrows():
+            raw_item = {
+                "ticket_id": row.get("ticket_id"),
+                "site_id": row.get("site_id"),
+                "site_name": row.get("nom_du_site") or row.get("site_name"),
+                "region": row.get("region"),
+                "ticket_text": row.get("ticket_text"),
+                "family": row.get("famille_de_problemes"),
+                "priority": row.get("priorite"),
+                "priority_text": row.get("priorite_texte"),
+                "incident_potential": row.get("incident_potential"),
+                "matched_incident_count": row.get("matched_incident_count"),
+                "kpi_3g_cssr_ps": row.get("kpi_3g_cssr_ps"),
+                "kpi_3g_throughput": row.get("kpi_3g_throughput"),
+                "kpi_3g_dropcall_cs": row.get("kpi_3g_dropcall_cs"),
+                "kpi_3g_cs_interrat_ho_sr": row.get(
+                    "kpi_3g_cs_interrat_ho_sr"
+                ),
+            }
+
+            items.append(_to_json_safe_payload(raw_item))
+
+        return {
+            "total": total,
+            "limit": limit,
+            "items": items,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Dataset ticket listing failed: {str(e)}",
+        )
+
+
+@router.get("/analyses/{ticket_id}", response_model=RCAAnalysisDetailResponse)
+def get_analysis_endpoint(
+    ticket_id: str,
+    db: Session = Depends(get_db),
+) -> RCAAnalysisDetailResponse:
+    analysis = get_analysis_by_ticket_id(db=db, ticket_id=ticket_id)
+
+    if analysis is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No RCA analysis found for ticket_id='{ticket_id}'.",
+        )
+
+    return RCAAnalysisDetailResponse(
+        ticket_id=analysis.ticket_id,
+        site_id=analysis.site_id,
+        site_name=analysis.site_name,
+        region=analysis.region,
+        priority=analysis.priority,
+        description=analysis.description,
+        predicted_family=analysis.predicted_family,
+        confidence=analysis.confidence,
+        top_hypotheses=[
+            HypothesisItem(**item)
+            for item in (analysis.top3_hypotheses_json or [])
+        ],
+        kpi_insights=analysis.kpi_insights_json or [],
+        recommended_checks=analysis.recommended_checks_json or [],
+        recommended_actions=analysis.recommended_actions_json or [],
+        draft_report=analysis.draft_report,
+        analysis_status=analysis.status,
+        created_at=analysis.created_at,
+        updated_at=analysis.updated_at,
+    )
+
+
+@router.get("/reports/{ticket_id}", response_model=RCAReportResponse)
+def get_report_endpoint(
+    ticket_id: str,
+    db: Session = Depends(get_db),
+) -> RCAReportResponse:
+    report = get_report_by_ticket_id(db=db, ticket_id=ticket_id)
+
+    if report is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No RCA report found for ticket_id='{ticket_id}'.",
+        )
+
+    return RCAReportResponse(
+        ticket_id=report.ticket_id,
+        report_id=report.report_id,
+        report_status=report.report_status,
+        report_text=report.report_text,
+        generated_at=report.generated_at,
+    )
+
+
+@router.post("/analyze", response_model=AnalyzeIncidentResponse)
+def analyze_incident(
+    payload: AnalyzeIncidentRequest,
+    db: Session = Depends(get_db),
+) -> AnalyzeIncidentResponse:
+    service = get_service()
+
+    if not service.is_trained or service.model is None:
+        raise HTTPException(status_code=503, detail="Model artifacts are not loaded.")
+
+    try:
+        payload_dict = payload.model_dump(exclude_none=True)
+        top_k = payload_dict.pop("top_k", 3)
+
+        result = service.predict(payload_dict, top_k=top_k)
+
+        kpi_insights = build_kpi_insights(payload_dict)
+
+        recommended_checks = build_recommended_checks(
+            predicted_family=result["predicted_family"],
+            payload=payload_dict,
+            kpi_insights=kpi_insights,
+        )
+
+        recommended_actions = build_recommended_actions(
+            predicted_family=result["predicted_family"],
+            payload=payload_dict,
+            kpi_insights=kpi_insights,
+        )
+
+        draft_report = build_draft_report(
+            ticket_id=payload_dict.get("ticket_id") or "AUTO",
+            predicted_family=result["predicted_family"],
+            confidence=result["confidence"],
+            top_hypotheses=result["top_hypotheses"],
+            kpi_insights=kpi_insights,
+            recommended_checks=recommended_checks,
+            recommended_actions=recommended_actions,
+            payload=payload_dict,
+        )
+
+        enriched = build_enriched_rca_payload(
+            predicted_family=result["predicted_family"],
+            confidence=result["confidence"],
+            top_hypotheses=result["top_hypotheses"],
+            payload=payload_dict,
+            kpi_insights=kpi_insights,
+        )
+
+        saved = upsert_analysis(
+            db=db,
+            payload=payload_dict,
+            prediction=result,
+            kpi_insights=kpi_insights,
+            recommended_checks=recommended_checks,
+            recommended_actions=recommended_actions,
+            draft_report=draft_report,
+        )
+
+        return _build_analysis_response(
+            saved=saved,
+            result=result,
+            kpi_insights=kpi_insights,
+            recommended_checks=recommended_checks,
+            recommended_actions=recommended_actions,
+            draft_report=draft_report,
+            enriched=enriched,
+        )
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Analysis failed: {str(e)}")
+
+
+@router.get("/tickets/{ticket_id}/analyze")
+def analyze_existing_ticket(ticket_id: str, top_k: int = 3) -> Dict[str, Any]:
+    service = get_service()
+
+    if not service.is_trained or service.model is None:
+        raise HTTPException(status_code=503, detail="Model artifacts are not loaded.")
+
+    try:
+        return service.predict_existing_ticket(ticket_id=ticket_id, top_k=top_k)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Analysis failed: {str(e)}")
+
+
+@router.post("/tickets/{ticket_id}/analyze-and-save", response_model=AnalyzeIncidentResponse)
+def analyze_existing_ticket_and_save(
+    ticket_id: str,
+    top_k: int = 3,
+    db: Session = Depends(get_db),
+) -> AnalyzeIncidentResponse:
+    service = get_service()
+
+    if not service.is_trained or service.model is None:
+        raise HTTPException(status_code=503, detail="Model artifacts are not loaded.")
+
+    try:
+        incident_df = load_training_dataframe()
+
+        if "ticket_id" not in incident_df.columns:
+            raise HTTPException(
+                status_code=500,
+                detail="RCA training dataframe does not contain ticket_id.",
+            )
+
+        matches = incident_df.loc[
+            incident_df["ticket_id"].astype(str) == str(ticket_id)
+        ]
+
+        if matches.empty:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Ticket '{ticket_id}' not found in RCA dataset.",
+            )
+
+        row = matches.iloc[0].copy()
+
+        target_column = getattr(service, "target_column", None)
+        drop_columns = []
+
+        if target_column:
+            drop_columns.append(target_column)
+
+        for possible_target in [
+            "famille_de_problemes",
+            "rca_family",
+            "family",
+            "label",
+            "target",
+        ]:
+            if possible_target not in drop_columns:
+                drop_columns.append(possible_target)
+
+        payload_dict = row.drop(
+            labels=drop_columns,
+            errors="ignore",
+        ).to_dict()
+
+        payload_dict = _to_json_safe_payload(payload_dict)
+
+        payload_dict["ticket_id"] = payload_dict.get("ticket_id") or ticket_id
+        payload_dict["ticket_text"] = (
+            payload_dict.get("ticket_text")
+            or payload_dict.get("description")
+            or f"RCA dataset ticket {ticket_id}"
+        )
+        payload_dict["site_name"] = (
+            payload_dict.get("site_name")
+            or payload_dict.get("nom_du_site")
+            or payload_dict.get("site_id")
+        )
+        payload_dict["nom_du_site"] = (
+            payload_dict.get("nom_du_site")
+            or payload_dict.get("site_name")
+            or payload_dict.get("site_id")
+        )
+        payload_dict["region"] = payload_dict.get("region") or str(
+            payload_dict.get("site_id") or ""
+        ).split("_")[0]
+
+        result = service.predict(payload_dict, top_k=top_k)
+
+        kpi_insights = build_kpi_insights(payload_dict)
+
+        recommended_checks = build_recommended_checks(
+            predicted_family=result["predicted_family"],
+            payload=payload_dict,
+            kpi_insights=kpi_insights,
+        )
+
+        recommended_actions = build_recommended_actions(
+            predicted_family=result["predicted_family"],
+            payload=payload_dict,
+            kpi_insights=kpi_insights,
+        )
+
+        draft_report = build_draft_report(
+            ticket_id=payload_dict.get("ticket_id") or ticket_id,
+            predicted_family=result["predicted_family"],
+            confidence=result["confidence"],
+            top_hypotheses=result["top_hypotheses"],
+            kpi_insights=kpi_insights,
+            recommended_checks=recommended_checks,
+            recommended_actions=recommended_actions,
+            payload=payload_dict,
+        )
+
+        enriched = build_enriched_rca_payload(
+            predicted_family=result["predicted_family"],
+            confidence=result["confidence"],
+            top_hypotheses=result["top_hypotheses"],
+            payload=payload_dict,
+            kpi_insights=kpi_insights,
+        )
+
+        saved = upsert_analysis(
+            db=db,
+            payload=payload_dict,
+            prediction=result,
+            kpi_insights=kpi_insights,
+            recommended_checks=recommended_checks,
+            recommended_actions=recommended_actions,
+            draft_report=draft_report,
+        )
+
+        return _build_analysis_response(
+            saved=saved,
+            result=result,
+            kpi_insights=kpi_insights,
+            recommended_checks=recommended_checks,
+            recommended_actions=recommended_actions,
+            draft_report=draft_report,
+            enriched=enriched,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Dataset ticket analysis failed: {str(e)}",
+        )
+
+
+@router.post("/approvals", response_model=RCAApprovalResponse)
+def approve_rca(
+    payload: RCAApprovalRequest,
+    db: Session = Depends(get_db),
+) -> RCAApprovalResponse:
+    try:
+        approval = upsert_approval(
+            db=db,
+            ticket_id=payload.ticket_id,
+            approved_by=payload.approved_by,
+            approval_status=payload.approval_status,
+            approved_family=payload.approved_family,
+            approved_checks=payload.approved_checks,
+            approved_actions=payload.approved_actions,
+            engineer_notes=payload.engineer_notes,
+        )
+
+        return RCAApprovalResponse(
+            ticket_id=approval.ticket_id,
+            approval_status=approval.approval_status,
+            approved_family=approval.approved_family,
+            approved_checks=approval.approved_checks_json or [],
+            approved_actions=approval.approved_actions_json or [],
+            engineer_notes=approval.engineer_notes,
+            approved_by=approval.approved_by,
+            approved_at=approval.approved_at,
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Approval failed: {str(e)}")
+
+
+@router.post("/reports", response_model=RCAReportResponse)
+def generate_report(
+    payload: RCAReportGenerateRequest,
+    db: Session = Depends(get_db),
+) -> RCAReportResponse:
+    try:
+        report = create_or_update_report(db=db, ticket_id=payload.ticket_id)
+
+        return RCAReportResponse(
+            ticket_id=report.ticket_id,
+            report_id=report.report_id,
+            report_status=report.report_status,
+            report_text=report.report_text,
+            generated_at=report.generated_at,
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Report generation failed: {str(e)}")
+
+
+@router.post("/runbooks/publish", response_model=RunbookEntryResponse)
+def publish_runbook_endpoint(
+    payload: RunbookPublishRequest,
+    db: Session = Depends(get_db),
+) -> RunbookEntryResponse:
+    try:
+        runbook = publish_runbook(
+            db=db,
+            ticket_id=payload.ticket_id,
+            created_by=payload.created_by,
+            tags=payload.tags,
+            is_reusable=payload.is_reusable,
+        )
+
+        return RunbookEntryResponse(
+            ticket_id=runbook.ticket_id,
+            site_id=runbook.site_id,
+            site_name=runbook.site_name,
+            region=runbook.region,
+            approved_family=runbook.approved_family,
+            incident_summary=runbook.incident_summary,
+            final_conclusion=runbook.final_conclusion,
+            checks=runbook.checks_json or [],
+            actions=runbook.actions_json or [],
+            engineer_notes=runbook.engineer_notes,
+            report_id=runbook.report_id,
+            tags=runbook.tags_json or [],
+            is_reusable=runbook.is_reusable,
+            created_by=runbook.created_by,
+            created_at=runbook.created_at,
+        )
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Runbook publish failed: {str(e)}")
+
+
+# IMPORTANT: keep /search before /{ticket_id}
+@router.get("/runbooks/search", response_model=RunbookSearchResponse)
+def search_runbooks_endpoint(
+    q: str | None = Query(default=None),
+    approved_family: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> RunbookSearchResponse:
+    items = search_runbooks(db=db, q=q, approved_family=approved_family, limit=limit)
+
+    return RunbookSearchResponse(
+        total=len(items),
+        items=[
+            RunbookEntryResponse(
+                ticket_id=item.ticket_id,
+                site_id=item.site_id,
+                site_name=item.site_name,
+                region=item.region,
+                approved_family=item.approved_family,
+                incident_summary=item.incident_summary,
+                final_conclusion=item.final_conclusion,
+                checks=item.checks_json or [],
+                actions=item.actions_json or [],
+                engineer_notes=item.engineer_notes,
+                report_id=item.report_id,
+                tags=item.tags_json or [],
+                is_reusable=item.is_reusable,
+                created_by=item.created_by,
+                created_at=item.created_at,
+            )
+            for item in items
+        ],
+    )
+
+
+@router.get("/runbooks/{ticket_id}", response_model=RunbookEntryResponse)
+def get_runbook_endpoint(
+    ticket_id: str,
+    db: Session = Depends(get_db),
+) -> RunbookEntryResponse:
+    item = get_runbook_by_ticket_id(db=db, ticket_id=ticket_id)
+
+    if item is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No runbook found for ticket_id='{ticket_id}'.",
+        )
+
+    return RunbookEntryResponse(
+        ticket_id=item.ticket_id,
+        site_id=item.site_id,
+        site_name=item.site_name,
+        region=item.region,
+        approved_family=item.approved_family,
+        incident_summary=item.incident_summary,
+        final_conclusion=item.final_conclusion,
+        checks=item.checks_json or [],
+        actions=item.actions_json or [],
+        engineer_notes=item.engineer_notes,
+        report_id=item.report_id,
+        tags=item.tags_json or [],
+        is_reusable=item.is_reusable,
+        created_by=item.created_by,
+        created_at=item.created_at,
+    )
+
+
+==================== rca_service\app\routers\backend_integration.py ====================
+
+from __future__ import annotations
+
+from typing import Any, Dict, Optional
+
+from fastapi import APIRouter, Depends, Header, HTTPException
+from sqlalchemy.orm import Session
+
+from app.db import get_db
+from app.schemas import HypothesisItem
+from app.services.backend_enrichment_service import build_backend_enriched_payload
+from app.services.ml_service import get_service
+from app.services.persistence_service import upsert_analysis
+from app.services.rca_enrichment_service import build_enriched_rca_payload
+from app.services.report_service import (
+    build_draft_report,
+    build_kpi_insights,
+    build_recommended_actions,
+    build_recommended_checks,
+)
+
+
+router = APIRouter(prefix="/api/v2/backend", tags=["Backend Integration"])
+
+
+def _safe_text(value: Any, fallback: str = "") -> str:
+    if value is None:
+        return fallback
+
+    if isinstance(value, str):
+        return value
+
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+
+    return fallback
+
+
+def _safe_float(value: Any, fallback: float = 0.0) -> float:
+    try:
+        if value is None:
+            return fallback
+        return float(value)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _build_incident_context(enrichment: Dict[str, Any]) -> Dict[str, Any]:
+    payload = enrichment.get("payload") or {}
+    source_incident = enrichment.get("source_incident") or {}
+    kpi_context = enrichment.get("kpi_context") or {}
+    dataset_context = enrichment.get("dataset_context") or {}
+
+    ticket_id = (
+        payload.get("ticket_id")
+        or source_incident.get("ticket_number")
+        or dataset_context.get("ticket_id")
+    )
+
+    problem_statement = (
+        payload.get("ticket_text")
+        or source_incident.get("title")
+        or source_incident.get("description")
+        or dataset_context.get("ticket_text")
+        or f"Incident {ticket_id}"
+    )
+
+    site_id = (
+        payload.get("site_id")
+        or payload.get("site_name")
+        or payload.get("nom_du_site")
+        or source_incident.get("site_name")
+        or kpi_context.get("nodeb_name")
+        or dataset_context.get("site_id")
+        or dataset_context.get("site_name")
+        or dataset_context.get("nom_du_site")
+    )
+
+    region = (
+        payload.get("region")
+        or source_incident.get("region_code")
+        or dataset_context.get("region")
+        or (_safe_text(site_id).split("_")[0] if site_id else None)
+    )
+
+    priority = (
+        payload.get("priorite")
+        or source_incident.get("priority")
+        or dataset_context.get("priorite")
+    )
+
+    severity = (
+        payload.get("priorite_texte")
+        or source_incident.get("severity")
+        or dataset_context.get("priorite_texte")
+    )
+
+    status = (
+        payload.get("incident_status")
+        or payload.get("etat")
+        or source_incident.get("status")
+        or dataset_context.get("etat")
+    )
+
+    technology = (
+        payload.get("technology")
+        or source_incident.get("technology")
+        or dataset_context.get("technology")
+        or "3G"
+    )
+
+    impact = (
+        payload.get("incident_potential")
+        or source_incident.get("health_impact_score")
+        or dataset_context.get("incident_potential")
+    )
+
+    return {
+        "ticket_id": ticket_id,
+        "problem_statement": _safe_text(problem_statement, f"Incident {ticket_id}"),
+        "site_id": site_id,
+        "site_name": site_id,
+        "region": region,
+        "priority": priority,
+        "severity": severity,
+        "status": status,
+        "technology": technology,
+        "impact": impact,
+        "problem_family_hint": (
+            payload.get("problem_family")
+            or source_incident.get("problem_family")
+            or dataset_context.get("famille_de_problemes")
+        ),
+        "source_flags": {
+            "incident_found": bool(enrichment.get("source_incident")),
+            "kpi_context_found": bool(enrichment.get("kpi_context")),
+            "dataset_context_found": bool(enrichment.get("dataset_context")),
+        },
+    }
+
+
+def _build_hypothesis_reviews(
+    result: Dict[str, Any],
+    payload: Dict[str, Any],
+    kpi_insights: list[str],
+) -> list[Dict[str, Any]]:
+    reviews: list[Dict[str, Any]] = []
+
+    for index, item in enumerate(result.get("top_hypotheses", []), start=1):
+        family = item.get("family")
+        probability = _safe_float(item.get("probability"))
+
+        if not family:
+            continue
+
+        suggested_checks = build_recommended_checks(
+            predicted_family=family,
+            payload=payload,
+            kpi_insights=kpi_insights,
+        )
+
+        suggested_actions = build_recommended_actions(
+            predicted_family=family,
+            payload=payload,
+            kpi_insights=kpi_insights,
+        )
+
+        reviews.append(
+            {
+                "rank": index,
+                "family": family,
+                "probability": probability,
+                "probability_percent": round(probability * 100.0, 2),
+                "is_model_choice": family == result.get("predicted_family"),
+                "suggested_checks": suggested_checks,
+                "suggested_actions": suggested_actions,
+                "review_options": [
+                    "validate",
+                    "reject",
+                    "partially_correct",
+                ],
+                "engineer_decision": None,
+                "engineer_note": "",
+            }
+        )
+
+    return reviews
+
+
+def _build_response(
+    saved,
+    result: Dict[str, Any],
+    kpi_insights: list[str],
+    recommended_checks: list[str],
+    recommended_actions: list[str],
+    draft_report: str,
+    enriched: Dict[str, Any],
+    enrichment: Dict[str, Any],
+) -> Dict[str, Any]:
+    payload = enrichment.get("payload") or {}
+
+    hypothesis_reviews = _build_hypothesis_reviews(
+        result=result,
+        payload=payload,
+        kpi_insights=kpi_insights,
+    )
+
+    return {
+        "predicted_family": result["predicted_family"],
+        "confidence": result["confidence"],
+        "top_hypotheses": [
+            HypothesisItem(**item).model_dump()
+            for item in result["top_hypotheses"]
+        ],
+        "ticket_id": saved.ticket_id,
+        "analysis_status": saved.status,
+
+        # Frontend-ready incident context
+        "incident_context": _build_incident_context(enrichment),
+
+        # Full raw contexts for debugging/details
+        "payload": enrichment.get("payload"),
+        "source_incident": enrichment.get("source_incident"),
+        "kpi_context": enrichment.get("kpi_context"),
+        "dataset_context": enrichment.get("dataset_context"),
+
+        # RCA content
+        "kpi_insights": kpi_insights,
+        "recommended_checks": recommended_checks,
+        "recommended_actions": recommended_actions,
+        "draft_report": draft_report,
+        "root_cause_summary": enriched["root_cause_summary"],
+        "risk_if_not_fixed": enriched["risk_if_not_fixed"],
+        "charts": enriched["charts"],
+
+        # New: one card per hypothesis for frontend validation UI
+        "hypothesis_reviews": hypothesis_reviews,
+
+        # Status
+        "explainability_status": {
+            "lime": "available",
+            "shap": "available",
+            "note": "Local LIME text explanation and SHAP-style global explanation are available through /api/v2/explain endpoints.",
+        },
+
+        "enrichment_trace": enrichment["enrichment_trace"],
+    }
+
+
+@router.get("/incidents/{ticket_number}/preview")
+def preview_backend_incident_enrichment(
+    ticket_number: str,
+    authorization: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    try:
+        return build_backend_enriched_payload(
+            ticket_number=ticket_number,
+            authorization=authorization,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Backend incident enrichment preview failed: {str(e)}",
+        )
+
+
+@router.post("/incidents/{ticket_number}/analyze")
+def analyze_backend_incident(
+    ticket_number: str,
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    service = get_service()
+
+    if not service.is_trained or service.model is None:
+        raise HTTPException(status_code=503, detail="Model artifacts are not loaded.")
+
+    try:
+        enrichment = build_backend_enriched_payload(
+            ticket_number=ticket_number,
+            authorization=authorization,
+        )
+
+        payload = enrichment["payload"]
+
+        result = service.predict(payload, top_k=3)
+
+        kpi_insights = build_kpi_insights(payload)
+
+        recommended_checks = build_recommended_checks(
+            predicted_family=result["predicted_family"],
+            payload=payload,
+            kpi_insights=kpi_insights,
+        )
+
+        recommended_actions = build_recommended_actions(
+            predicted_family=result["predicted_family"],
+            payload=payload,
+            kpi_insights=kpi_insights,
+        )
+
+        draft_report = build_draft_report(
+            ticket_id=payload.get("ticket_id") or ticket_number,
+            predicted_family=result["predicted_family"],
+            confidence=result["confidence"],
+            top_hypotheses=result["top_hypotheses"],
+            kpi_insights=kpi_insights,
+            recommended_checks=recommended_checks,
+            recommended_actions=recommended_actions,
+            payload=payload,
+        )
+
+        enriched = build_enriched_rca_payload(
+            predicted_family=result["predicted_family"],
+            confidence=result["confidence"],
+            top_hypotheses=result["top_hypotheses"],
+            payload=payload,
+            kpi_insights=kpi_insights,
+        )
+
+        saved = upsert_analysis(
+            db=db,
+            payload=payload,
+            prediction=result,
+            kpi_insights=kpi_insights,
+            recommended_checks=recommended_checks,
+            recommended_actions=recommended_actions,
+            draft_report=draft_report,
+        )
+
+        return _build_response(
+            saved=saved,
+            result=result,
+            kpi_insights=kpi_insights,
+            recommended_checks=recommended_checks,
+            recommended_actions=recommended_actions,
+            draft_report=draft_report,
+            enriched=enriched,
+            enrichment=enrichment,
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Backend incident analysis failed: {str(e)}",
+        )
+
+
+==================== rca_service\app\routers\explainability.py ====================
+
+from __future__ import annotations
+
+from typing import Any, Dict
+
+from fastapi import APIRouter, HTTPException, Query
+
+from app.services.explainability_service import (
+    build_global_explanation,
+    build_local_explanation,
+    explainability_package_status,
+)
+
+
+router = APIRouter(prefix="/api/v2/explain", tags=["Explainability"])
+
+
+@router.get("/status")
+def explainability_status() -> Dict[str, Any]:
+    return {
+        "status": "ready",
+        "package_status": explainability_package_status(),
+        "available_methods": [
+            "local_perturbation_lime_style",
+            "global_linear_importance_shap_style",
+        ],
+        "notes": [
+            "Local endpoint explains one ticket by feature perturbation, similar to LIME reasoning.",
+            "Global endpoint explains the logistic regression model using coefficient-based feature importance.",
+            "Library-based LIME/SHAP can be added later if packages are installed and validated.",
+        ],
+    }
+
+
+@router.get("/local/{ticket_id}")
+def explain_local_ticket(
+    ticket_id: str,
+    top_n: int = Query(default=10, ge=1, le=30),
+) -> Dict[str, Any]:
+    try:
+        return build_local_explanation(ticket_id=ticket_id, top_n=top_n)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Local explanation failed: {str(e)}",
+        )
+
+
+@router.get("/global")
+def explain_global_model(
+    top_n: int = Query(default=25, ge=1, le=100),
+) -> Dict[str, Any]:
+    try:
+        return build_global_explanation(top_n=top_n)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Global explanation failed: {str(e)}",
+        )
+
+
+==================== rca_service\app\routers\training.py ====================
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from sqlalchemy import or_
+from sqlalchemy.orm import Session
+
+from app.db import get_db
+from app.models import RunbookEntry
+from app.services.online_training_service import (
+    get_online_training_status,
+    predict_with_online_model,
+    update_online_model_from_feedback,
+)
+
+
+router = APIRouter(prefix="/api/v2/training", tags=["Training Feedback"])
+
+
+def _safe_list(value: Any) -> List[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _runbook_to_feedback_item(runbook: RunbookEntry) -> Dict[str, Any]:
+    return {
+        "ticket_id": runbook.ticket_id,
+        "site_id": runbook.site_id,
+        "site_name": runbook.site_name,
+        "region": runbook.region,
+        "approved_family": runbook.approved_family,
+        "incident_summary": runbook.incident_summary,
+        "final_conclusion": runbook.final_conclusion,
+        "checks": _safe_list(runbook.checks_json),
+        "actions": _safe_list(runbook.actions_json),
+        "engineer_notes": runbook.engineer_notes,
+        "report_id": runbook.report_id,
+        "tags": _safe_list(runbook.tags_json),
+        "is_reusable": runbook.is_reusable,
+        "created_by": runbook.created_by,
+        "created_at": runbook.created_at,
+        "updated_at": runbook.updated_at,
+    }
+
+
+@router.get("/feedback")
+def export_training_feedback(
+    q: Optional[str] = Query(default=None),
+    approved_family: Optional[str] = Query(default=None),
+    reusable_only: bool = Query(default=True),
+    limit: int = Query(default=100, ge=1, le=1000),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    query = db.query(RunbookEntry)
+
+    if reusable_only:
+        query = query.filter(RunbookEntry.is_reusable == "yes")
+
+    if approved_family:
+        query = query.filter(RunbookEntry.approved_family == approved_family)
+
+    if q:
+        like = f"%{q}%"
+        query = query.filter(
+            or_(
+                RunbookEntry.ticket_id.ilike(like),
+                RunbookEntry.site_id.ilike(like),
+                RunbookEntry.site_name.ilike(like),
+                RunbookEntry.region.ilike(like),
+                RunbookEntry.approved_family.ilike(like),
+                RunbookEntry.incident_summary.ilike(like),
+                RunbookEntry.final_conclusion.ilike(like),
+                RunbookEntry.engineer_notes.ilike(like),
+            )
+        )
+
+    items = query.order_by(RunbookEntry.created_at.desc()).limit(limit).all()
+
+    return {
+        "total": len(items),
+        "limit": limit,
+        "reusable_only": reusable_only,
+        "approved_family": approved_family,
+        "query": q,
+        "learning_strategy": {
+            "current": "Human-approved RCA/runbook cases are exported as feedback data for future offline retraining.",
+            "future": "True online incremental learning can be added later using SGDClassifier(log_loss) with partial_fit.",
+        },
+        "items": [_runbook_to_feedback_item(item) for item in items],
+    }
+
+
+@router.get("/feedback/summary")
+def training_feedback_summary(
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    runbooks = db.query(RunbookEntry).all()
+
+    by_family: Dict[str, int] = {}
+    reusable_count = 0
+
+    for item in runbooks:
+        family = item.approved_family or "Unknown"
+        by_family[family] = by_family.get(family, 0) + 1
+
+        if item.is_reusable == "yes":
+            reusable_count += 1
+
+    return {
+        "total_runbooks": len(runbooks),
+        "reusable_runbooks": reusable_count,
+        "by_family": by_family,
+        "learning_strategy": "Approved runbooks represent validated RCA feedback that can be reused for future retraining.",
+    }
+
+
+@router.get("/online/status")
+def online_training_status() -> Dict[str, Any]:
+    return get_online_training_status()
+
+
+@router.post("/online/update")
+def online_training_update(
+    reusable_only: bool = Query(default=True),
+    approved_family: Optional[str] = Query(default=None),
+    limit: int = Query(default=1000, ge=1, le=5000),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    try:
+        return update_online_model_from_feedback(
+            db=db,
+            reusable_only=reusable_only,
+            approved_family=approved_family,
+            limit=limit,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Online training update failed: {str(e)}",
+        )
+
+
+@router.post("/online/predict")
+def online_training_predict(
+    payload: Dict[str, Any] = Body(...),
+    top_k: int = Query(default=3, ge=1, le=5),
+) -> Dict[str, Any]:
+    try:
+        return predict_with_online_model(payload=payload, top_k=top_k)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Online model prediction failed: {str(e)}",
+        )
+
+
+==================== rca_service\app\services\ml_service.py ====================
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import joblib
+import numpy as np
+import pandas as pd
+from sklearn.compose import ColumnTransformer
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.impute import SimpleImputer
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+
+from app.services.data_pipeline import (
+    build_incident_dataset,
+    load_raw_data,
+    split_features_target,
+)
+
+DEFAULT_TARGET_COLUMN = "famille_de_problemes"
+
+BASE_DROP_COLUMNS = {
+    "ticket_id",
+    "site_id",
+    DEFAULT_TARGET_COLUMN,
+}
+
+TEXT_SOURCE_CANDIDATES = [
+    "ticket_text",
+    "origine",
+    "etat",
+    "type_ticket",
+    "priorite_texte",
+    "nom_du_site",
+    "site_name",
+    "region",
+    "incident_status",
+    "worst_priority_text",
+    "incident_match_source",
+    "mapping_source",
+    "frequency_band",
+]
+
+DATE_COLUMN_PREFIXES = ("date_",)
+
+
+class RCAModelService:
+    def __init__(
+        self,
+        data_dir: Optional[str | Path] = None,
+        target_column: str = DEFAULT_TARGET_COLUMN,
+    ) -> None:
+        self.data_dir = Path(data_dir) if data_dir else None
+        self.target_column = target_column
+
+        self.model: Optional[Pipeline] = None
+        self.training_feature_columns: List[str] = []
+        self.numeric_columns: List[str] = []
+        self.categorical_columns: List[str] = []
+        self.all_null_columns: List[str] = []
+        self.text_column: str = "combined_text"
+        self.is_trained: bool = False
+
+    # ------------------------------------------------------------------
+    # Paths
+    # ------------------------------------------------------------------
+
+    def _project_root(self) -> Path:
+        return Path(__file__).resolve().parents[2]
+
+    def _artifacts_dir(self) -> Path:
+        return self._project_root() / "artifacts"
+
+    def _model_file(self) -> Path:
+        return self._artifacts_dir() / "model.pkl"
+
+    def _feature_columns_file(self) -> Path:
+        return self._artifacts_dir() / "feature_columns.json"
+
+    def _numeric_columns_file(self) -> Path:
+        return self._artifacts_dir() / "numeric_columns.json"
+
+    def _categorical_columns_file(self) -> Path:
+        return self._artifacts_dir() / "categorical_columns.json"
+
+    def _all_null_columns_file(self) -> Path:
+        return self._artifacts_dir() / "all_null_columns.json"
+
+    def _metadata_file(self) -> Path:
+        return self._artifacts_dir() / "model_metadata.json"
+
+    # ------------------------------------------------------------------
+    # Artifact loading
+    # ------------------------------------------------------------------
+
+    def load_artifacts(self) -> Dict[str, Any]:
+        model_path = self._model_file()
+        feature_columns_path = self._feature_columns_file()
+        numeric_columns_path = self._numeric_columns_file()
+        categorical_columns_path = self._categorical_columns_file()
+        all_null_columns_path = self._all_null_columns_file()
+        metadata_path = self._metadata_file()
+
+        required_files = [
+            model_path,
+            feature_columns_path,
+            numeric_columns_path,
+            categorical_columns_path,
+            all_null_columns_path,
+            metadata_path,
+        ]
+
+        missing = [str(p) for p in required_files if not p.exists()]
+        if missing:
+            raise FileNotFoundError(
+                f"Missing required model artifacts: {missing}. "
+                f"Run 'python train_v2.py' first."
+            )
+
+        self.model = joblib.load(model_path)
+
+        with feature_columns_path.open("r", encoding="utf-8") as f:
+            self.training_feature_columns = json.load(f)
+
+        with numeric_columns_path.open("r", encoding="utf-8") as f:
+            self.numeric_columns = json.load(f)
+
+        with categorical_columns_path.open("r", encoding="utf-8") as f:
+            self.categorical_columns = json.load(f)
+
+        with all_null_columns_path.open("r", encoding="utf-8") as f:
+            self.all_null_columns = json.load(f)
+
+        with metadata_path.open("r", encoding="utf-8") as f:
+            metadata = json.load(f)
+
+        self.text_column = metadata.get("text_column", "combined_text")
+        self.target_column = metadata.get("target_column", self.target_column)
+        self.is_trained = True
+
+        return {
+            "status": "loaded",
+            "model_file": str(model_path),
+            "feature_count": len(self.training_feature_columns),
+            "classes": metadata.get("classes", []),
+            "trained_at_utc": metadata.get("trained_at_utc"),
+        }
+
+    # ------------------------------------------------------------------
+    # Public training data API
+    # ------------------------------------------------------------------
+
+    def load_training_dataframe(self) -> pd.DataFrame:
+        raw_data = load_raw_data(self.data_dir)
+        incident_df = build_incident_dataset(raw_data)
+        return incident_df
+
+    def get_training_data(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+        incident_df = self.load_training_dataframe()
+
+        if self.target_column not in incident_df.columns:
+            raise ValueError(
+                f"Target column '{self.target_column}' not found. "
+                f"Available columns: {list(incident_df.columns)}"
+            )
+
+        X_raw, y = split_features_target(incident_df, target_column=self.target_column)
+        X = self._prepare_features_for_model(X_raw, fit_mode=True)
+
+        valid_mask = y.notna()
+        X = X.loc[valid_mask].reset_index(drop=True)
+        y = y.loc[valid_mask].reset_index(drop=True)
+        incident_df = incident_df.loc[valid_mask].reset_index(drop=True)
+
+        self.all_null_columns = [col for col in X.columns if X[col].isna().all()]
+        X = X.drop(columns=self.all_null_columns, errors="ignore")
+
+        return incident_df, X, y
+
+    def train(self) -> Dict[str, Any]:
+        incident_df, X, y = self.get_training_data()
+
+        self.training_feature_columns = list(X.columns)
+
+        self.numeric_columns = X.select_dtypes(include=["number", "bool"]).columns.tolist()
+        self.categorical_columns = [
+            col for col in X.columns
+            if col not in self.numeric_columns and col != self.text_column
+        ]
+
+        preprocessor = self._build_preprocessor()
+        classifier = LogisticRegression(max_iter=2000)
+
+        self.model = Pipeline(
+            steps=[
+                ("preprocessor", preprocessor),
+                ("classifier", classifier),
+            ]
+        )
+
+        self.model.fit(X, y)
+        self.is_trained = True
+
+        classes = []
+        if hasattr(self.model.named_steps["classifier"], "classes_"):
+            classes = self.model.named_steps["classifier"].classes_.tolist()
+
+        return {
+            "status": "trained",
+            "rows": int(len(incident_df)),
+            "feature_columns": self.training_feature_columns,
+            "numeric_feature_count": len(self.numeric_columns),
+            "categorical_feature_count": len(self.categorical_columns),
+            "classes": classes,
+        }
+
+    # ------------------------------------------------------------------
+    # Public prediction API
+    # ------------------------------------------------------------------
+
+    def predict(self, incident_payload: Dict[str, Any], top_k: int = 3) -> Dict[str, Any]:
+        if not self.is_trained or self.model is None:
+            raise RuntimeError(
+                "Model is not loaded or trained yet. "
+                "Call load_artifacts() or train() first."
+            )
+
+        input_df = pd.DataFrame([incident_payload])
+        input_df = self._prepare_features_for_model(input_df, fit_mode=False)
+        input_df = input_df.drop(columns=self.all_null_columns, errors="ignore")
+        input_df = self._align_inference_frame(input_df)
+
+        probabilities = self.model.predict_proba(input_df)[0]
+        prediction = self.model.predict(input_df)[0]
+
+        classifier = self.model.named_steps["classifier"]
+        classes = classifier.classes_
+
+        top_hypotheses = self._build_top_hypotheses(
+            classes=classes,
+            probabilities=probabilities,
+            top_k=top_k,
+        )
+
+        confidence = float(max(probabilities)) if len(probabilities) else 0.0
+
+        return {
+            "predicted_family": prediction,
+            "confidence": round(confidence, 4),
+            "top_hypotheses": top_hypotheses,
+        }
+
+    def predict_from_dataframe_row(self, row: pd.Series, top_k: int = 3) -> Dict[str, Any]:
+        payload = row.to_dict()
+        return self.predict(payload, top_k=top_k)
+
+    def predict_existing_ticket(self, ticket_id: str, top_k: int = 3) -> Dict[str, Any]:
+        if not self.is_trained or self.model is None:
+            raise RuntimeError(
+                "Model is not loaded or trained yet. "
+                "Call load_artifacts() or train() first."
+            )
+
+        incident_df = self.load_training_dataframe()
+
+        if "ticket_id" not in incident_df.columns:
+            raise ValueError("incident dataframe does not contain 'ticket_id'")
+
+        matches = incident_df.loc[incident_df["ticket_id"] == ticket_id]
+        if matches.empty:
+            raise ValueError(f"Ticket '{ticket_id}' not found in incident dataset.")
+
+        row = matches.iloc[0].copy()
+        actual_family = row.get(self.target_column)
+        features_only = row.drop(labels=[self.target_column], errors="ignore")
+
+        prediction = self.predict_from_dataframe_row(features_only, top_k=top_k)
+        prediction["ticket_id"] = ticket_id
+        prediction["actual_family"] = actual_family
+
+        return prediction
+
+    # ------------------------------------------------------------------
+    # Internal preprocessing
+    # ------------------------------------------------------------------
+
+    def _prepare_features_for_model(self, df: pd.DataFrame, fit_mode: bool) -> pd.DataFrame:
+        frame = df.copy()
+
+        drop_cols = [col for col in BASE_DROP_COLUMNS if col in frame.columns]
+        frame = frame.drop(columns=drop_cols, errors="ignore")
+
+        frame = self._expand_date_columns(frame)
+        frame[self.text_column] = self._build_combined_text(frame)
+
+        return frame
+
+    def _expand_date_columns(self, df: pd.DataFrame) -> pd.DataFrame:
+        frame = df.copy()
+
+        date_cols = [
+            col for col in frame.columns
+            if col.startswith(DATE_COLUMN_PREFIXES)
+        ]
+
+        for col in date_cols:
+            parsed = pd.to_datetime(frame[col], dayfirst=True, errors="coerce")
+
+            frame[f"{col}_year"] = parsed.dt.year
+            frame[f"{col}_month"] = parsed.dt.month
+            frame[f"{col}_day"] = parsed.dt.day
+            frame[f"{col}_hour"] = parsed.dt.hour
+            frame[f"{col}_minute"] = parsed.dt.minute
+            frame[f"{col}_weekday"] = parsed.dt.weekday
+
+        if "date_debut" in frame.columns and "date_d_acquittement" in frame.columns:
+            debut = pd.to_datetime(frame["date_debut"], dayfirst=True, errors="coerce")
+            acquittement = pd.to_datetime(frame["date_d_acquittement"], dayfirst=True, errors="coerce")
+            frame["minutes_to_ack"] = (acquittement - debut).dt.total_seconds() / 60.0
+
+        if "date_debut" in frame.columns and "date_de_reparation" in frame.columns:
+            debut = pd.to_datetime(frame["date_debut"], dayfirst=True, errors="coerce")
+            reparation = pd.to_datetime(frame["date_de_reparation"], dayfirst=True, errors="coerce")
+            frame["minutes_to_repair"] = (reparation - debut).dt.total_seconds() / 60.0
+
+        if "date_debut" in frame.columns and "date_de_cloture" in frame.columns:
+            debut = pd.to_datetime(frame["date_debut"], dayfirst=True, errors="coerce")
+            cloture = pd.to_datetime(frame["date_de_cloture"], dayfirst=True, errors="coerce")
+            frame["minutes_to_close"] = (cloture - debut).dt.total_seconds() / 60.0
+
+        frame = frame.drop(columns=date_cols, errors="ignore")
+
+        return frame
+
+    def _build_combined_text(self, df: pd.DataFrame) -> pd.Series:
+        available_text_cols = [col for col in TEXT_SOURCE_CANDIDATES if col in df.columns]
+
+        if not available_text_cols:
+            return pd.Series([""] * len(df), index=df.index)
+
+        combined = (
+            df[available_text_cols]
+            .fillna("")
+            .astype(str)
+            .agg(" ".join, axis=1)
+            .str.strip()
+        )
+
+        return combined
+
+    def _build_preprocessor(self) -> ColumnTransformer:
+        transformers = []
+
+        if self.text_column in self.training_feature_columns:
+            transformers.append(
+                (
+                    "text",
+                    TfidfVectorizer(
+                        max_features=5000,
+                        ngram_range=(1, 2),
+                        min_df=2,
+                    ),
+                    self.text_column,
+                )
+            )
+
+        if self.numeric_columns:
+            transformers.append(
+                (
+                    "num",
+                    Pipeline(
+                        steps=[
+                            ("imputer", SimpleImputer(strategy="median")),
+                            ("scaler", StandardScaler()),
+                        ]
+                    ),
+                    self.numeric_columns,
+                )
+            )
+
+        if self.categorical_columns:
+            transformers.append(
+                (
+                    "cat",
+                    Pipeline(
+                        steps=[
+                            ("imputer", SimpleImputer(strategy="most_frequent")),
+                            ("onehot", OneHotEncoder(handle_unknown="ignore")),
+                        ]
+                    ),
+                    self.categorical_columns,
+                )
+            )
+
+        return ColumnTransformer(
+            transformers=transformers,
+            remainder="drop",
+        )
+
+    def _align_inference_frame(self, df: pd.DataFrame) -> pd.DataFrame:
+        if not self.training_feature_columns:
+            raise RuntimeError("training_feature_columns are not initialized.")
+
+        frame = df.copy()
+
+        for col in self.training_feature_columns:
+            if col not in frame.columns:
+                frame[col] = np.nan
+
+        frame = frame[self.training_feature_columns]
+        frame = frame.replace({pd.NA: np.nan})
+
+        for col in self.numeric_columns:
+            if col in frame.columns:
+                frame[col] = pd.to_numeric(frame[col], errors="coerce")
+
+        for col in self.categorical_columns:
+            if col in frame.columns:
+                frame[col] = frame[col].fillna("").astype(str)
+
+        if self.text_column in frame.columns:
+            frame[self.text_column] = frame[self.text_column].fillna("").astype(str)
+
+        return frame
+
+    def _build_top_hypotheses(
+        self,
+        classes,
+        probabilities,
+        top_k: int = 3,
+    ) -> List[Dict[str, Any]]:
+        pairs = list(zip(classes, probabilities))
+        pairs = sorted(pairs, key=lambda x: x[1], reverse=True)[:top_k]
+
+        return [
+            {
+                "family": family,
+                "probability": round(float(prob), 4),
+            }
+            for family, prob in pairs
+        ]
+
+
+_default_service: Optional[RCAModelService] = None
+
+
+def get_service(
+    data_dir: Optional[str | Path] = None,
+    target_column: str = DEFAULT_TARGET_COLUMN,
+) -> RCAModelService:
+    global _default_service
+
+    if _default_service is None:
+        _default_service = RCAModelService(
+            data_dir=data_dir,
+            target_column=target_column,
+        )
+
+    return _default_service
+
+
+def load_training_dataframe(data_dir: Optional[str | Path] = None) -> pd.DataFrame:
+    service = get_service(data_dir=data_dir)
+    return service.load_training_dataframe()
+
+
+def get_training_data(
+    data_dir: Optional[str | Path] = None,
+    target_column: str = DEFAULT_TARGET_COLUMN,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+    service = get_service(data_dir=data_dir, target_column=target_column)
+    return service.get_training_data()
+
+
+def train_model(
+    data_dir: Optional[str | Path] = None,
+    target_column: str = DEFAULT_TARGET_COLUMN,
+) -> Dict[str, Any]:
+    service = get_service(data_dir=data_dir, target_column=target_column)
+    return service.train()
+
+
+def load_model_artifacts() -> Dict[str, Any]:
+    service = get_service()
+    return service.load_artifacts()
+
+
+def predict_incident(
+    incident_payload: Dict[str, Any],
+    top_k: int = 3,
+) -> Dict[str, Any]:
+    service = get_service()
+    return service.predict(incident_payload, top_k=top_k)
+
+
+==================== rca_service\app\services\data_pipeline.py ====================
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Dict, Optional, Tuple, List
+
+import pandas as pd
+import re
+import unicodedata
+
+
+# -------------------------------------------------------------------
+# File names
+# -------------------------------------------------------------------
+
+SITES_FILE = "master_sites_corrected_synthetic.csv"
+ENGINEERING_FILE = "engineering_parameters_corrected_synthetic.csv"
+TICKETS_FILE = "tickets_radio_synthetic_linked.csv"
+
+
+# -------------------------------------------------------------------
+# Candidate column names
+# Adjust these only if your real CSV headers differ after normalization.
+# Normalization rule = lowercase + strip + spaces/hyphens -> underscores
+# -------------------------------------------------------------------
+
+SITE_ID_CANDIDATES = ["site_id", "siteid", "site_code", "site_name", "nom_du_site"]
+
+TICKET_ID_CANDIDATES = [
+    "ticket_id",
+    "ticketid",
+    "id",
+    "numero_ticket",
+    "num_ticket",
+]
+
+TICKET_TEXT_CANDIDATES = [
+    "ticket_text",
+    "description",
+    "problem_description",
+    "ticket_description",
+]
+
+TARGET_CANDIDATES = [
+    "rca_family",
+    "family",
+    "label",
+    "target",
+    "famille_de_problemes",
+    "famille_de_probleme",
+]
+
+# -------------------------------------------------------------------
+# Small helpers
+# -------------------------------------------------------------------
+
+def _project_root() -> Path:
+    # app/services/data_pipeline.py -> app/services -> app -> project root
+    return Path(__file__).resolve().parents[2]
+
+
+def _default_data_dir() -> Path:
+    return _project_root() / "data"
+
+
+def _slugify_column_name(col: str) -> str:
+    col = str(col).strip().lower()
+
+    # Remove accents: numéro -> numero, problèmes -> problemes
+    col = unicodedata.normalize("NFKD", col).encode("ascii", "ignore").decode("ascii")
+
+    # Replace apostrophes and separators with underscores
+    col = col.replace("'", "_").replace("’", "_").replace("-", "_").replace(" ", "_")
+
+    # Replace any remaining non-alphanumeric chars with underscore
+    col = re.sub(r"[^a-z0-9_]", "_", col)
+
+    # Collapse repeated underscores
+    col = re.sub(r"_+", "_", col).strip("_")
+
+    return col
+
+
+def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [_slugify_column_name(col) for col in df.columns]
+    return df
+
+
+def _find_first_existing(df: pd.DataFrame, candidates: List[str], label: str) -> str:
+    for col in candidates:
+        if col in df.columns:
+            return col
+    raise ValueError(
+        f"Could not find {label}. Tried {candidates}. "
+        f"Available columns: {list(df.columns)}"
+    )
+
+
+def _rename_if_found(df: pd.DataFrame, candidates: List[str], canonical_name: str) -> pd.DataFrame:
+    df = df.copy()
+    for col in candidates:
+        if col in df.columns and col != canonical_name:
+            df = df.rename(columns={col: canonical_name})
+            break
+    return df
+
+def _coerce_numeric_columns(df: pd.DataFrame, exclude: Optional[List[str]] = None) -> pd.DataFrame:
+    df = df.copy()
+    exclude = exclude or []
+
+    for col in df.columns:
+        if col in exclude:
+            continue
+
+        try:
+            df[col] = pd.to_numeric(df[col], errors="raise")
+        except (ValueError, TypeError):
+            # Leave non-numeric columns unchanged
+            pass
+
+    return df
+
+
+# -------------------------------------------------------------------
+# Public API
+# -------------------------------------------------------------------
+
+def load_raw_data(data_dir: Optional[str | Path] = None) -> Dict[str, pd.DataFrame]:
+    """
+    Load the 3 raw CSV files and normalize their column names.
+
+    Returns:
+        {
+            "sites": pd.DataFrame,
+            "engineering": pd.DataFrame,
+            "tickets": pd.DataFrame
+        }
+    """
+    data_path = Path(data_dir) if data_dir else _default_data_dir()
+
+    sites_path = data_path / SITES_FILE
+    engineering_path = data_path / ENGINEERING_FILE
+    tickets_path = data_path / TICKETS_FILE
+
+    missing = [str(p) for p in [sites_path, engineering_path, tickets_path] if not p.exists()]
+    if missing:
+        raise FileNotFoundError(f"Missing required CSV files: {missing}")
+
+    sites_df = _normalize_columns(pd.read_csv(sites_path))
+    engineering_df = _normalize_columns(pd.read_csv(engineering_path))
+    tickets_df = _normalize_columns(pd.read_csv(tickets_path))
+
+    return {
+        "sites": sites_df,
+        "engineering": engineering_df,
+        "tickets": tickets_df,
+    }
+
+
+def validate_raw_data(raw_data: Dict[str, pd.DataFrame]) -> Dict[str, str]:
+    """
+    Validate minimum required columns and return the detected key columns.
+    """
+    sites_df = raw_data["sites"]
+    engineering_df = raw_data["engineering"]
+    tickets_df = raw_data["tickets"]
+
+    sites_site_key = _find_first_existing(sites_df, SITE_ID_CANDIDATES, "site key in sites CSV")
+    engineering_site_key = _find_first_existing(engineering_df, SITE_ID_CANDIDATES, "site key in engineering CSV")
+    tickets_site_key = _find_first_existing(tickets_df, SITE_ID_CANDIDATES, "site key in tickets CSV")
+    tickets_ticket_key = _find_first_existing(tickets_df, TICKET_ID_CANDIDATES, "ticket id in tickets CSV")
+
+    detected = {
+        "sites_site_key": sites_site_key,
+        "engineering_site_key": engineering_site_key,
+        "tickets_site_key": tickets_site_key,
+        "tickets_ticket_key": tickets_ticket_key,
+    }
+
+    return detected
+
+
+def build_incident_dataset(raw_data: Dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """
+    Build the incident-level dataset for V2.
+
+    Goal:
+    - 1 row = 1 incident ticket
+    - merge ticket data with site data and engineering aggregates by site_id
+
+    Notes:
+    - Engineering data is aggregated by site_id.
+    - Sites data is deduplicated by site_id.
+    - Tickets remain the base table.
+    """
+    detected = validate_raw_data(raw_data)
+
+    sites_df = raw_data["sites"].copy()
+    engineering_df = raw_data["engineering"].copy()
+    tickets_df = raw_data["tickets"].copy()
+
+    # Rename detected keys to canonical names
+    sites_df = sites_df.rename(columns={detected["sites_site_key"]: "site_id"})
+    engineering_df = engineering_df.rename(columns={detected["engineering_site_key"]: "site_id"})
+    tickets_df = tickets_df.rename(
+        columns={
+            detected["tickets_site_key"]: "site_id",
+            detected["tickets_ticket_key"]: "ticket_id",
+        }
+    )
+
+    # Optional canonical rename for text field if present
+    tickets_df = _rename_if_found(tickets_df, TICKET_TEXT_CANDIDATES, "ticket_text")
+
+    # Coerce numeric columns where possible
+    sites_df = _coerce_numeric_columns(sites_df, exclude=["site_id"])
+    engineering_df = _coerce_numeric_columns(engineering_df, exclude=["site_id"])
+    tickets_df = _coerce_numeric_columns(tickets_df, exclude=["site_id", "ticket_id", "ticket_text"])
+
+    # Deduplicate sites table to avoid exploding rows on merge
+    sites_df = sites_df.drop_duplicates(subset=["site_id"], keep="first")
+
+    # Aggregate engineering data by site_id
+    engineering_agg = _aggregate_engineering_by_site(engineering_df)
+
+    # Base = tickets
+    incident_df = tickets_df.merge(
+        sites_df,
+        on="site_id",
+        how="left",
+        suffixes=("", "_site"),
+    )
+
+    incident_df = incident_df.merge(
+        engineering_agg,
+        on="site_id",
+        how="left",
+        suffixes=("", "_eng"),
+    )
+
+    # Final guard: 1 row = 1 incident ticket
+    if "ticket_id" in incident_df.columns:
+        incident_df = incident_df.drop_duplicates(subset=["ticket_id"], keep="first")
+
+    return incident_df
+
+
+def split_features_target(
+    incident_df: pd.DataFrame,
+    target_column: Optional[str] = None,
+) -> Tuple[pd.DataFrame, pd.Series]:
+    """
+    Split incident dataset into X and y.
+
+    If target_column is not provided, tries common target candidates.
+    """
+    df = incident_df.copy()
+
+    if target_column is None:
+        target_column = _find_first_existing(df, TARGET_CANDIDATES, "target column")
+
+    if target_column not in df.columns:
+        raise ValueError(f"Target column '{target_column}' not found in dataset.")
+
+    y = df[target_column]
+    X = df.drop(columns=[target_column])
+
+    return X, y
+
+
+def summarize_incident_dataset(incident_df: pd.DataFrame) -> Dict[str, object]:
+    """
+    Useful for quick debugging / smoke tests.
+    """
+    summary = {
+        "rows": int(len(incident_df)),
+        "columns": list(incident_df.columns),
+        "null_counts": incident_df.isnull().sum().to_dict(),
+    }
+
+    if "ticket_id" in incident_df.columns:
+        summary["unique_ticket_ids"] = int(incident_df["ticket_id"].nunique())
+
+    if "site_id" in incident_df.columns:
+        summary["unique_site_ids"] = int(incident_df["site_id"].nunique())
+
+    return summary
+
+
+# -------------------------------------------------------------------
+# Internal aggregation logic
+# -------------------------------------------------------------------
+
+def _aggregate_engineering_by_site(engineering_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate engineering rows at site level.
+
+    Strategy:
+    - numeric columns -> mean
+    - also keep a count of engineering rows per site
+    """
+    df = engineering_df.copy()
+
+    if "site_id" not in df.columns:
+        raise ValueError("Engineering dataframe must contain 'site_id' before aggregation.")
+
+    numeric_cols = [
+        col for col in df.select_dtypes(include=["number"]).columns
+        if col != "site_id"
+    ]
+
+    if not numeric_cols:
+        # If there are no numeric columns, still return a minimal site-level frame
+        agg_df = df[["site_id"]].drop_duplicates().copy()
+        agg_df["engineering_record_count"] = df.groupby("site_id")["site_id"].transform("count")
+        agg_df = agg_df.drop_duplicates(subset=["site_id"])
+        return agg_df
+
+    agg_dict = {col: "mean" for col in numeric_cols}
+    agg_df = df.groupby("site_id", as_index=False).agg(agg_dict)
+
+    counts = (
+        df.groupby("site_id", as_index=False)
+        .size()
+        .rename(columns={"size": "engineering_record_count"})
+    )
+
+    agg_df = agg_df.merge(counts, on="site_id", how="left")
+    return agg_df
+
+
+==================== rca_service\app\services\explainability_service.py ====================
+
+from __future__ import annotations
+
+import importlib.util
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+
+from app.services.ml_service import DEFAULT_TARGET_COLUMN, get_service, load_training_dataframe
+
+
+TARGET_COLUMNS = {
+    DEFAULT_TARGET_COLUMN,
+    "famille_de_problemes",
+    "rca_family",
+    "family",
+    "label",
+    "target",
+}
+
+
+def _package_installed(package_name: str) -> bool:
+    return importlib.util.find_spec(package_name) is not None
+
+
+def explainability_package_status() -> Dict[str, bool]:
+    return {
+        "lime_installed": _package_installed("lime"),
+        "shap_installed": _package_installed("shap"),
+    }
+
+
+def _safe_json_value(value: Any) -> Any:
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+
+    if isinstance(value, np.generic):
+        return value.item()
+
+    return value
+
+
+def _safe_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: _safe_json_value(value) for key, value in payload.items()}
+
+
+def _clean_feature_name(name: str) -> str:
+    cleaned = str(name)
+
+    for prefix in [
+        "num__",
+        "cat__",
+        "text__",
+        "remainder__",
+        "onehot__",
+        "tfidf__",
+        "bow__",
+    ]:
+        cleaned = cleaned.replace(prefix, "")
+
+    return cleaned
+
+
+def _load_ticket_payload(ticket_id: str) -> Dict[str, Any]:
+    df = load_training_dataframe()
+
+    if "ticket_id" not in df.columns:
+        raise ValueError("RCA training dataframe does not contain ticket_id.")
+
+    matches = df.loc[df["ticket_id"].astype(str) == str(ticket_id)]
+
+    if matches.empty:
+        raise ValueError(f"Ticket '{ticket_id}' not found in RCA dataset.")
+
+    row = matches.iloc[0].copy()
+
+    drop_columns = [col for col in TARGET_COLUMNS if col in row.index]
+
+    payload = row.drop(labels=drop_columns, errors="ignore").to_dict()
+    payload = _safe_payload(payload)
+
+    payload["ticket_id"] = payload.get("ticket_id") or ticket_id
+    payload["ticket_text"] = (
+        payload.get("ticket_text")
+        or payload.get("description")
+        or f"RCA dataset ticket {ticket_id}"
+    )
+    payload["site_name"] = (
+        payload.get("site_name")
+        or payload.get("nom_du_site")
+        or payload.get("site_id")
+    )
+    payload["nom_du_site"] = (
+        payload.get("nom_du_site")
+        or payload.get("site_name")
+        or payload.get("site_id")
+    )
+    payload["region"] = payload.get("region") or str(
+        payload.get("site_id") or ""
+    ).split("_")[0]
+
+    return payload
+
+
+def _candidate_explanation_features(payload: Dict[str, Any]) -> List[str]:
+    preferred = [
+        "ticket_text",
+        "priorite",
+        "priorite_texte",
+        "etat",
+        "type_ticket",
+        "incident_status",
+        "site_id",
+        "nom_du_site",
+        "region",
+        "kpi_3g_cssr_ps",
+        "kpi_3g_shosr",
+        "kpi_3g_throughput",
+        "kpi_3g_dropcall_cs",
+        "kpi_3g_cs_rab_setup_sr",
+        "kpi_3g_cs_interrat_ho_sr",
+        "incident_potential",
+        "matched_incident_count",
+        "incident_mapping_confidence",
+        "worst_priority_code",
+        "engineering_record_count",
+        "frequency_band",
+        "actual_load_dl",
+        "max_power",
+        "pilot_power",
+        "azimuth",
+        "antheight",
+        "mechtilt",
+        "electilt",
+    ]
+
+    existing = [key for key in preferred if key in payload and payload.get(key) is not None]
+
+    if len(existing) >= 8:
+        return existing
+
+    extra = [
+        key
+        for key, value in payload.items()
+        if key not in existing
+        and key not in {"ticket_id"}
+        and value is not None
+    ]
+
+    return (existing + extra)[:40]
+
+
+def _neutral_value(feature: str, original_value: Any, df: pd.DataFrame) -> Any:
+    if feature in df.columns and pd.api.types.is_numeric_dtype(df[feature]):
+        median = pd.to_numeric(df[feature], errors="coerce").median()
+        if not pd.isna(median):
+            return float(median)
+        return 0.0
+
+    if isinstance(original_value, (int, float, np.number)):
+        return 0.0
+
+    if "text" in feature.lower() or "description" in feature.lower():
+        return ""
+
+    return ""
+
+
+def _build_lime_text_explanation(
+    payload: Dict[str, Any],
+    predicted_family: str,
+    top_n: int,
+) -> Dict[str, Any]:
+    status = explainability_package_status()
+
+    if not status["lime_installed"]:
+        return {
+            "available": False,
+            "method": "official_lime_text",
+            "reason": "lime package is not installed.",
+            "items": [],
+        }
+
+    try:
+        from lime.lime_text import LimeTextExplainer
+    except Exception as exc:
+        return {
+            "available": False,
+            "method": "official_lime_text",
+            "reason": f"lime import failed: {exc}",
+            "items": [],
+        }
+
+    service = get_service()
+    base_payload = dict(payload)
+    original_text = str(base_payload.get("ticket_text") or "")
+
+    if not original_text.strip():
+        return {
+            "available": False,
+            "method": "official_lime_text",
+            "reason": "ticket_text is empty.",
+            "items": [],
+        }
+
+    classifier = service.model.named_steps.get("classifier")
+    if classifier is not None and hasattr(classifier, "classes_"):
+        classes = [str(x) for x in classifier.classes_.tolist()]
+    else:
+        classes = ["Performance", "Préventif", "Radio Access", "Transmission"]
+
+    def classifier_fn(texts: List[str]) -> np.ndarray:
+        rows = []
+
+        for text in texts:
+            row_payload = dict(base_payload)
+            row_payload["ticket_text"] = text
+
+            prediction = service.predict(row_payload, top_k=len(classes))
+
+            probability_by_class = {
+                item["family"]: float(item["probability"])
+                for item in prediction.get("top_hypotheses", [])
+            }
+
+            rows.append(
+                [
+                    probability_by_class.get(class_name, 0.0)
+                    for class_name in classes
+                ]
+            )
+
+        return np.array(rows)
+
+    try:
+        explainer = LimeTextExplainer(class_names=classes)
+        explanation = explainer.explain_instance(
+            original_text,
+            classifier_fn,
+            num_features=top_n,
+            labels=[classes.index(predicted_family)] if predicted_family in classes else None,
+        )
+
+        label_index = classes.index(predicted_family) if predicted_family in classes else explanation.available_labels()[0]
+
+        items = [
+            {
+                "token_or_phrase": feature,
+                "weight": round(float(weight), 6),
+                "direction": "supports_prediction" if weight > 0 else "opposes_prediction",
+            }
+            for feature, weight in explanation.as_list(label=label_index)
+        ]
+
+        return {
+            "available": True,
+            "method": "official_lime_text",
+            "explained_class": predicted_family,
+            "class_names": classes,
+            "items": items,
+            "note": (
+                "This official LIME explanation focuses on the ticket text. "
+                "Structured KPI/metadata influence is still covered by the perturbation explanation."
+            ),
+        }
+
+    except Exception as exc:
+        return {
+            "available": False,
+            "method": "official_lime_text",
+            "reason": f"LIME explanation failed: {exc}",
+            "items": [],
+        }
+
+
+def build_local_explanation(ticket_id: str, top_n: int = 10) -> Dict[str, Any]:
+    service = get_service()
+
+    if not service.is_trained or service.model is None:
+        raise RuntimeError("Model artifacts are not loaded.")
+
+    df = load_training_dataframe()
+    payload = _load_ticket_payload(ticket_id)
+
+    prediction = service.predict(payload, top_k=3)
+    predicted_family = prediction["predicted_family"]
+    base_confidence = float(prediction["confidence"])
+
+    candidates = _candidate_explanation_features(payload)
+    feature_effects: List[Dict[str, Any]] = []
+
+    for feature in candidates:
+        if feature not in payload:
+            continue
+
+        original_value = payload.get(feature)
+        perturbed_payload = dict(payload)
+        perturbed_value = _neutral_value(feature, original_value, df)
+        perturbed_payload[feature] = perturbed_value
+
+        try:
+            perturbed_prediction = service.predict(perturbed_payload, top_k=3)
+        except Exception:
+            continue
+
+        new_probability = 0.0
+        for item in perturbed_prediction.get("top_hypotheses", []):
+            if item.get("family") == predicted_family:
+                new_probability = float(item.get("probability", 0.0))
+                break
+
+        delta = base_confidence - new_probability
+
+        feature_effects.append(
+            {
+                "feature": feature,
+                "original_value": _safe_json_value(original_value),
+                "perturbed_value": _safe_json_value(perturbed_value),
+                "predicted_family_probability_before": round(base_confidence, 6),
+                "predicted_family_probability_after": round(new_probability, 6),
+                "importance_delta": round(delta, 6),
+                "effect": "supports_prediction" if delta > 0 else "opposes_or_neutral",
+            }
+        )
+
+    feature_effects = sorted(
+        feature_effects,
+        key=lambda item: abs(float(item["importance_delta"])),
+        reverse=True,
+    )[:top_n]
+
+    lime_text_explanation = _build_lime_text_explanation(
+        payload=payload,
+        predicted_family=predicted_family,
+        top_n=top_n,
+    )
+
+    return {
+        "ticket_id": ticket_id,
+        "method": "hybrid_local_explainability",
+        "note": (
+            "This endpoint combines official LIME text explanation when available "
+            "with safe perturbation-based explanation for structured RCA features."
+        ),
+        "package_status": explainability_package_status(),
+        "predicted_family": predicted_family,
+        "confidence": base_confidence,
+        "top_hypotheses": prediction.get("top_hypotheses", []),
+        "lime_text_explanation": lime_text_explanation,
+        "structured_feature_perturbation": {
+            "method": "local_perturbation_lime_style",
+            "top_features": feature_effects,
+        },
+    }
+
+
+def _extract_linear_feature_importance() -> Tuple[List[str], Optional[np.ndarray], List[str]]:
+    service = get_service()
+
+    if not service.is_trained or service.model is None:
+        raise RuntimeError("Model artifacts are not loaded.")
+
+    classifier = service.model.named_steps.get("classifier")
+    preprocessor = service.model.named_steps.get("preprocessor")
+
+    if classifier is None or not hasattr(classifier, "coef_"):
+        return [], None, []
+
+    classes = classifier.classes_.tolist() if hasattr(classifier, "classes_") else []
+    coefs = classifier.coef_
+
+    feature_names: List[str] = []
+
+    if preprocessor is not None and hasattr(preprocessor, "get_feature_names_out"):
+        try:
+            feature_names = [
+                _clean_feature_name(name)
+                for name in preprocessor.get_feature_names_out().tolist()
+            ]
+        except Exception:
+            feature_names = []
+
+    if not feature_names:
+        feature_count = coefs.shape[1] if len(coefs.shape) == 2 else len(coefs)
+        feature_names = [f"feature_{idx}" for idx in range(feature_count)]
+
+    return feature_names, coefs, classes
+
+
+def build_global_explanation(top_n: int = 25) -> Dict[str, Any]:
+    feature_names, coefs, classes = _extract_linear_feature_importance()
+    package_status = explainability_package_status()
+
+    if coefs is None:
+        return {
+            "method": "global_explanation_unavailable",
+            "note": "The current classifier does not expose linear coefficients.",
+            "package_status": package_status,
+            "items": [],
+        }
+
+    if coefs.ndim == 1:
+        importance = np.abs(coefs)
+    else:
+        importance = np.mean(np.abs(coefs), axis=0)
+
+    items = []
+    for idx, value in enumerate(importance):
+        feature_name = feature_names[idx] if idx < len(feature_names) else f"feature_{idx}"
+        items.append(
+            {
+                "feature": feature_name,
+                "importance": round(float(value), 6),
+            }
+        )
+
+    items = sorted(items, key=lambda item: item["importance"], reverse=True)[:top_n]
+
+    by_class: Dict[str, List[Dict[str, Any]]] = {}
+
+    if coefs.ndim == 2 and classes:
+        for class_index, class_name in enumerate(classes):
+            class_items = []
+            class_coef = coefs[class_index]
+
+            for idx, value in enumerate(class_coef):
+                feature_name = feature_names[idx] if idx < len(feature_names) else f"feature_{idx}"
+                class_items.append(
+                    {
+                        "feature": feature_name,
+                        "coefficient": round(float(value), 6),
+                        "direction": "supports_class" if value > 0 else "opposes_class",
+                        "absolute_importance": round(abs(float(value)), 6),
+                    }
+                )
+
+            by_class[str(class_name)] = sorted(
+                class_items,
+                key=lambda item: item["absolute_importance"],
+                reverse=True,
+            )[:top_n]
+
+    shap_note = (
+        "The shap package is installed. For this production API, global explanation uses "
+        "Logistic Regression coefficients as a stable SHAP-style baseline for linear models. "
+        "A full SHAP value endpoint can be added later if needed."
+        if package_status["shap_installed"]
+        else "The shap package is not installed; coefficient-based global explanation is used."
+    )
+
+    return {
+        "method": "global_linear_importance_shap_style",
+        "note": shap_note,
+        "package_status": package_status,
+        "classes": classes,
+        "top_global_features": items,
+        "top_features_by_class": by_class,
+    }
+
+
+==================== rca_service\app\services\persistence_service.py ====================
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
+
+from sqlalchemy import or_
+from sqlalchemy.orm import Session
+
+from app.models import RCAAnalysis, RCAApproval, RCAReport, RunbookEntry
+from app.services.report_service import build_runbook_fields
+
+
+def ensure_ticket_id(ticket_id: Optional[str]) -> str:
+    if ticket_id and str(ticket_id).strip():
+        return str(ticket_id).strip()
+    return f"AUTO-{uuid4().hex[:12].upper()}"
+
+
+def get_analysis_by_ticket_id(db: Session, ticket_id: str) -> Optional[RCAAnalysis]:
+    return db.query(RCAAnalysis).filter(RCAAnalysis.ticket_id == ticket_id).first()
+
+
+def get_approval_by_ticket_id(db: Session, ticket_id: str) -> Optional[RCAApproval]:
+    return db.query(RCAApproval).filter(RCAApproval.ticket_id == ticket_id).first()
+
+
+def get_report_by_ticket_id(db: Session, ticket_id: str) -> Optional[RCAReport]:
+    return db.query(RCAReport).filter(RCAReport.ticket_id == ticket_id).first()
+
+
+def get_runbook_by_ticket_id(db: Session, ticket_id: str) -> Optional[RunbookEntry]:
+    return db.query(RunbookEntry).filter(RunbookEntry.ticket_id == ticket_id).first()
+
+
+def upsert_analysis(
+    db: Session,
+    payload: Dict[str, Any],
+    prediction: Dict[str, Any],
+    kpi_insights: List[str],
+    recommended_checks: List[str],
+    recommended_actions: List[str],
+    draft_report: str,
+) -> RCAAnalysis:
+    ticket_id = ensure_ticket_id(payload.get("ticket_id"))
+    analysis = get_analysis_by_ticket_id(db, ticket_id)
+
+    if analysis is None:
+        analysis = RCAAnalysis(ticket_id=ticket_id)
+        db.add(analysis)
+
+    analysis.site_id = payload.get("site_id")
+    analysis.site_name = payload.get("site_name") or payload.get("nom_du_site")
+    analysis.region = payload.get("region")
+    analysis.priority = payload.get("priorite_texte") or payload.get("priorite")
+    analysis.description = payload.get("ticket_text")
+
+    analysis.predicted_family = prediction["predicted_family"]
+    analysis.confidence = float(prediction["confidence"])
+
+    analysis.top3_hypotheses_json = prediction["top_hypotheses"]
+    analysis.kpi_insights_json = kpi_insights
+    analysis.recommended_checks_json = recommended_checks
+    analysis.recommended_actions_json = recommended_actions
+
+    analysis.draft_report = draft_report
+    analysis.status = "analysis_ready"
+
+    db.commit()
+    db.refresh(analysis)
+    return analysis
+
+
+def upsert_approval(
+    db: Session,
+    ticket_id: str,
+    approved_by: str,
+    approval_status: str,
+    approved_family: Optional[str] = None,
+    approved_checks: Optional[List[str]] = None,
+    approved_actions: Optional[List[str]] = None,
+    engineer_notes: Optional[str] = None,
+) -> RCAApproval:
+    analysis = get_analysis_by_ticket_id(db, ticket_id)
+    if analysis is None:
+        raise ValueError(f"No RCA analysis found for ticket_id='{ticket_id}'.")
+
+    approval = get_approval_by_ticket_id(db, ticket_id)
+    if approval is None:
+        approval = RCAApproval(ticket_id=ticket_id)
+        db.add(approval)
+
+    approval.approved_family = approved_family or analysis.predicted_family
+    approval.approved_checks_json = approved_checks or (
+        analysis.recommended_checks_json or []
+    )
+    approval.approved_actions_json = approved_actions or (
+        analysis.recommended_actions_json or []
+    )
+    approval.engineer_notes = engineer_notes
+    approval.approved_by = approved_by
+    approval.approval_status = approval_status
+
+    analysis.status = "approved" if approval_status == "approved" else "rejected"
+
+    db.commit()
+    db.refresh(approval)
+    return approval
+
+
+def build_final_report_v2(analysis, approval) -> str:
+    top_hypotheses = analysis.top3_hypotheses_json or []
+
+    hypotheses_text = "\n".join(
+        f"- {item.get('family')}: {float(item.get('probability', 0)) * 100:.2f}%"
+        for item in top_hypotheses
+    ) or "- None"
+
+    checks = approval.approved_checks_json or []
+    actions = approval.approved_actions_json or []
+    insights = analysis.kpi_insights_json or []
+
+    checks_text = (
+        "\n".join(f"{idx + 1}. {x}" for idx, x in enumerate(checks))
+        if checks
+        else "1. None"
+    )
+    actions_text = (
+        "\n".join(f"{idx + 1}. {x}" for idx, x in enumerate(actions))
+        if actions
+        else "1. None"
+    )
+    insights_text = "\n".join(f"- {x}" for x in insights) if insights else "- None"
+
+    chosen_family = approval.approved_family
+    model_family = analysis.predicted_family
+    confidence = float(analysis.confidence or 0.0)
+    confidence_percent = confidence * 100.0
+
+    if confidence >= 0.90:
+        confidence_label = "Very high confidence"
+        engineer_review_note = (
+            "The model output is strong and suitable for guided RCA validation."
+        )
+    elif confidence >= 0.75:
+        confidence_label = "High confidence"
+        engineer_review_note = (
+            "The model output is usable, with engineer confirmation recommended."
+        )
+    elif confidence >= 0.60:
+        confidence_label = "Medium confidence"
+        engineer_review_note = (
+            "The model output should be reviewed carefully before operational closure."
+        )
+    else:
+        confidence_label = "Low confidence"
+        engineer_review_note = (
+            "The model output should be treated as exploratory and requires strong engineer validation."
+        )
+
+    if chosen_family == "Transmission":
+        root_cause_statement = (
+            "The approved RCA indicates a probable transmission or backhaul degradation. "
+            "The issue may affect throughput stability, packet delivery, latency, and service continuity."
+        )
+        risk_impact = (
+            "If not fixed, the incident may evolve into wider service instability, repeated degradation, "
+            "throughput collapse, packet loss, and possible cascading impact on dependent sites."
+        )
+        estimated_fix_window = (
+            "0-4 hours for critical validation, then continuous monitoring after recovery."
+        )
+        final_conclusion = (
+            "Likely transport or backhaul degradation affecting service continuity."
+        )
+
+    elif chosen_family == "Radio Access":
+        root_cause_statement = (
+            "The approved RCA indicates a probable radio access degradation. "
+            "The issue may affect accessibility, handover behavior, dropped calls, or sector-level quality."
+        )
+        risk_impact = (
+            "If not fixed, users may experience access failures, mobility failures, call drops, "
+            "and persistent radio quality degradation."
+        )
+        estimated_fix_window = (
+            "0-8 hours depending on site accessibility and radio investigation results."
+        )
+        final_conclusion = "Likely radio-layer degradation affecting access or mobility."
+
+    elif chosen_family == "Performance":
+        root_cause_statement = (
+            "The approved RCA indicates a probable performance degradation. "
+            "The issue may be linked to congestion, traffic pressure, load imbalance, or optimization gaps."
+        )
+        risk_impact = (
+            "If not fixed, the site may continue producing poor user experience, low throughput, "
+            "high complaint volume, and repeated performance tickets."
+        )
+        estimated_fix_window = "4-24 hours depending on optimization or capacity actions."
+        final_conclusion = (
+            "Likely performance degradation driven by congestion or optimization gaps."
+        )
+
+    elif chosen_family == "Préventif":
+        root_cause_statement = (
+            "The approved RCA indicates an early degradation pattern requiring preventive handling. "
+            "The objective is to avoid escalation into a major incident."
+        )
+        risk_impact = (
+            "If ignored, the pattern may become recurrent and later evolve into a confirmed "
+            "service-impacting incident."
+        )
+        estimated_fix_window = (
+            "24-48 hours for preventive verification and follow-up monitoring."
+        )
+        final_conclusion = "Likely early-stage degradation suitable for preventive handling."
+
+    else:
+        root_cause_statement = (
+            "The approved RCA indicates a probable operational degradation that requires further validation."
+        )
+        risk_impact = (
+            "If not fixed, the incident may continue affecting network stability and user experience."
+        )
+        estimated_fix_window = "To be estimated by the responsible operations team."
+        final_conclusion = "Cause remains uncertain and needs additional validation."
+
+    return f"""Final RCA Report
+Ticket ID: {analysis.ticket_id}
+Site ID: {analysis.site_id or "N/A"}
+Site Name: {analysis.site_name or "N/A"}
+Region: {analysis.region or "N/A"}
+Priority: {analysis.priority or "N/A"}
+
+1. Incident Description
+{analysis.description or "N/A"}
+
+2. Approved Root Cause
+Chosen hypothesis: {chosen_family}
+Model predicted family: {model_family}
+Model confidence: {confidence_percent:.2f}% ({confidence_label})
+
+Root cause statement:
+{root_cause_statement}
+
+3. Top Model Hypotheses
+{hypotheses_text}
+
+4. KPI Evidence and Supporting Signals
+{insights_text}
+
+5. Engineer Validation
+Approval status: {approval.approval_status}
+Approved by: {approval.approved_by}
+
+Engineer notes:
+{approval.engineer_notes or "No engineer notes provided."}
+
+Review note:
+{engineer_review_note}
+
+6. Recommended Checks / Diagnostic Steps
+{checks_text}
+
+7. Recommended Actions / Steps to Follow
+{actions_text}
+
+8. Risk If Not Fixed
+Estimated operational impact:
+{risk_impact}
+
+Estimated intervention window:
+{estimated_fix_window}
+
+9. Chart Data Guidance
+- Hypothesis probability chart: use top hypotheses and confidence percentages.
+- KPI evidence chart: use KPI insights as degraded supporting indicators.
+- Risk timeline chart: show current risk, escalation window, and expected operational impact if not fixed.
+
+10. Final Conclusion
+{final_conclusion}
+""".strip()
+
+
+def create_or_update_report(db: Session, ticket_id: str) -> RCAReport:
+    analysis = get_analysis_by_ticket_id(db, ticket_id)
+    if analysis is None:
+        raise ValueError(f"No RCA analysis found for ticket_id='{ticket_id}'.")
+
+    approval = get_approval_by_ticket_id(db, ticket_id)
+    if approval is None:
+        raise ValueError(f"No RCA approval found for ticket_id='{ticket_id}'.")
+
+    if approval.approval_status != "approved":
+        raise ValueError(
+            f"Ticket '{ticket_id}' is not approved. Cannot generate final report."
+        )
+
+    report_text = build_final_report_v2(analysis, approval)
+
+    report = get_report_by_ticket_id(db, ticket_id)
+    if report is None:
+        report = RCAReport(
+            ticket_id=ticket_id,
+            report_id=f"RPT-{ticket_id}",
+        )
+        db.add(report)
+
+    report.report_text = report_text
+    report.report_status = "generated"
+    report.generated_at = datetime.now(timezone.utc)
+
+    analysis.status = "report_generated"
+
+    db.commit()
+    db.refresh(report)
+    return report
+
+
+def publish_runbook(
+    db: Session,
+    ticket_id: str,
+    created_by: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    is_reusable: str = "yes",
+) -> RunbookEntry:
+    analysis = get_analysis_by_ticket_id(db, ticket_id)
+    if analysis is None:
+        raise ValueError(f"No RCA analysis found for ticket_id='{ticket_id}'.")
+
+    approval = get_approval_by_ticket_id(db, ticket_id)
+    if approval is None:
+        raise ValueError(f"No RCA approval found for ticket_id='{ticket_id}'.")
+
+    if approval.approval_status != "approved":
+        raise ValueError(
+            f"Ticket '{ticket_id}' is not approved. Cannot publish runbook."
+        )
+
+    report = get_report_by_ticket_id(db, ticket_id)
+    if report is None:
+        raise ValueError(
+            f"No RCA report found for ticket_id='{ticket_id}'. Generate the report first."
+        )
+
+    runbook = get_runbook_by_ticket_id(db, ticket_id)
+    if runbook is None:
+        runbook = RunbookEntry(ticket_id=ticket_id)
+        db.add(runbook)
+
+    derived = build_runbook_fields(analysis, approval, report.report_text)
+
+    runbook.site_id = analysis.site_id
+    runbook.site_name = analysis.site_name
+    runbook.region = analysis.region
+    runbook.approved_family = approval.approved_family
+    runbook.incident_summary = derived["incident_summary"]
+    runbook.final_conclusion = derived["final_conclusion"]
+    runbook.checks_json = derived["checks_json"]
+    runbook.actions_json = derived["actions_json"]
+    runbook.engineer_notes = approval.engineer_notes
+    runbook.report_id = report.report_id
+    runbook.tags_json = tags or []
+    runbook.is_reusable = is_reusable
+    runbook.created_by = created_by or approval.approved_by
+
+    analysis.status = "runbook_published"
+
+    db.commit()
+    db.refresh(runbook)
+    return runbook
+
+
+def search_runbooks(
+    db: Session,
+    q: Optional[str] = None,
+    approved_family: Optional[str] = None,
+    limit: int = 20,
+) -> List[RunbookEntry]:
+    limit = max(1, min(limit, 100))
+    query = db.query(RunbookEntry)
+
+    if approved_family:
+        query = query.filter(RunbookEntry.approved_family == approved_family)
+
+    if q:
+        like = f"%{q}%"
+        query = query.filter(
+            or_(
+                RunbookEntry.ticket_id.ilike(like),
+                RunbookEntry.site_id.ilike(like),
+                RunbookEntry.site_name.ilike(like),
+                RunbookEntry.region.ilike(like),
+                RunbookEntry.approved_family.ilike(like),
+                RunbookEntry.incident_summary.ilike(like),
+                RunbookEntry.final_conclusion.ilike(like),
+                RunbookEntry.engineer_notes.ilike(like),
+            )
+        )
+
+    return query.order_by(RunbookEntry.created_at.desc()).limit(limit).all()
+
+
+==================== rca_service\app\services\report_service.py ====================
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+
+FAMILY_PLAYBOOK = {
+    "Transmission": {
+        "checks": [
+            "Check transmission alarms and backhaul link status.",
+            "Verify transport latency, packet loss, and interface errors.",
+            "Validate microwave or fiber availability for the impacted site.",
+        ],
+        "actions": [
+            "Stabilize or reroute the affected transport path.",
+            "Coordinate with transmission team for link recovery.",
+            "Monitor service KPIs after transport restoration.",
+        ],
+        "conclusion": "Likely transport or backhaul degradation affecting service continuity.",
+    },
+    "Radio Access": {
+        "checks": [
+            "Inspect cell availability, radio alarms, and sector health.",
+            "Review handover behavior, interference indicators, and access failures.",
+            "Validate neighbor relations and radio configuration consistency.",
+        ],
+        "actions": [
+            "Correct radio configuration or neighbor issues.",
+            "Investigate sector hardware, feeder, or interference conditions.",
+            "Re-test accessibility and mobility KPIs after intervention.",
+        ],
+        "conclusion": "Likely radio-layer degradation affecting access or mobility.",
+    },
+    "Performance": {
+        "checks": [
+            "Review throughput, congestion, and load distribution KPIs.",
+            "Check whether the issue aligns with traffic pressure or localized overload.",
+            "Verify whether user experience degradation matches KPI deterioration.",
+        ],
+        "actions": [
+            "Apply performance optimization on impacted cells.",
+            "Rebalance load or adjust parameters if congestion is confirmed.",
+            "Track post-change KPI recovery over subsequent periods.",
+        ],
+        "conclusion": "Likely performance degradation driven by congestion or optimization gaps.",
+    },
+    "Préventif": {
+        "checks": [
+            "Review preventive indicators and early degradation signals.",
+            "Verify if repeated weak KPI patterns are emerging on the site.",
+            "Check whether the current issue suggests a developing fault.",
+        ],
+        "actions": [
+            "Schedule preventive maintenance or site verification.",
+            "Track the site closely for recurring abnormal behavior.",
+            "Document early warning patterns for future reuse.",
+        ],
+        "conclusion": "Likely early-stage degradation suitable for preventive handling.",
+    },
+}
+
+
+def _playbook_for_family(family: str) -> Dict[str, Any]:
+    return FAMILY_PLAYBOOK.get(
+        family,
+        {
+            "checks": [
+                "Review available KPI evidence and impacted services.",
+                "Validate whether the anomaly is persistent or transient.",
+            ],
+            "actions": [
+                "Escalate for deeper RCA review.",
+                "Collect additional evidence before final action.",
+            ],
+            "conclusion": "Cause remains uncertain and needs additional validation.",
+        },
+    )
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_low(payload: Dict[str, Any], key: str, threshold: float) -> bool:
+    value = _safe_float(payload.get(key))
+    return value is not None and value < threshold
+
+
+def _is_high(payload: Dict[str, Any], key: str, threshold: float) -> bool:
+    value = _safe_float(payload.get(key))
+    return value is not None and value > threshold
+
+
+def _has_repeated_pattern(payload: Dict[str, Any]) -> bool:
+    matched = _safe_float(payload.get("matched_incident_count"))
+    return matched is not None and matched >= 3
+
+
+def _is_high_risk(payload: Dict[str, Any]) -> bool:
+    potential = _safe_float(payload.get("incident_potential"))
+    return potential is not None and potential >= 0.8
+
+
+def _unique(items: List[str]) -> List[str]:
+    seen = set()
+    result: List[str] = []
+
+    for item in items:
+        normalized = item.strip()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+
+    return result
+
+
+def build_kpi_insights(payload: Dict[str, Any]) -> List[str]:
+    insights: List[str] = []
+
+    if _is_low(payload, "kpi_3g_cssr_ps", 95):
+        insights.append(f"3G CSSR PS is weak at {payload.get('kpi_3g_cssr_ps')}.")
+    if _is_low(payload, "kpi_3g_shosr", 95):
+        insights.append(f"3G SHO success rate is degraded at {payload.get('kpi_3g_shosr')}.")
+    if _is_low(payload, "kpi_3g_throughput", 4000):
+        insights.append(f"3G throughput is low at {payload.get('kpi_3g_throughput')}.")
+    if _is_high(payload, "kpi_3g_dropcall_cs", 2):
+        insights.append(f"3G CS drop call rate is elevated at {payload.get('kpi_3g_dropcall_cs')}.")
+    if _is_low(payload, "kpi_3g_cs_rab_setup_sr", 95):
+        insights.append(f"3G CS RAB setup success rate is weak at {payload.get('kpi_3g_cs_rab_setup_sr')}.")
+    if _is_low(payload, "kpi_3g_cs_interrat_ho_sr", 95):
+        insights.append(f"3G CS inter-RAT HO success rate is weak at {payload.get('kpi_3g_cs_interrat_ho_sr')}.")
+
+    if _is_high_risk(payload):
+        insights.append(f"Incident potential is high at {payload.get('incident_potential')}.")
+    if _has_repeated_pattern(payload):
+        insights.append(f"Matched incident count suggests repeated pattern: {payload.get('matched_incident_count')}.")
+
+    if payload.get("frequency_band"):
+        insights.append(f"Reported frequency band context: {payload.get('frequency_band')}.")
+    if payload.get("incident_status"):
+        insights.append(f"Incident status context: {payload.get('incident_status')}.")
+
+    if not insights:
+        insights.append("Limited KPI context provided; prediction is mainly driven by available text and sparse metadata.")
+
+    return _unique(insights)
+
+
+def build_recommended_checks(
+    predicted_family: str,
+    payload: Dict[str, Any],
+    kpi_insights: List[str],
+) -> List[str]:
+    checks = list(_playbook_for_family(predicted_family)["checks"])
+
+    if payload.get("site_id"):
+        checks.insert(0, f"Validate impacted site context for site_id={payload['site_id']}.")
+    if payload.get("ticket_text"):
+        checks.append("Cross-check field observations against the incident description.")
+    if _has_repeated_pattern(payload):
+        checks.append("Compare with previous similar incidents for the same site or pattern.")
+    if _is_high_risk(payload):
+        checks.append("Prioritize validation because the incident potential is high.")
+
+    if predicted_family == "Transmission":
+        if _is_low(payload, "kpi_3g_throughput", 4000):
+            checks.append("Correlate throughput degradation with backhaul saturation or transport instability.")
+        if _is_high(payload, "kpi_3g_dropcall_cs", 2):
+            checks.append("Check whether call drops align with transport interruptions or packet loss.")
+        if _is_low(payload, "kpi_3g_cs_rab_setup_sr", 95):
+            checks.append("Verify whether RAB setup weakness is linked to transport path instability.")
+
+    elif predicted_family == "Radio Access":
+        if _is_low(payload, "kpi_3g_shosr", 95) or _is_low(payload, "kpi_3g_cs_interrat_ho_sr", 95):
+            checks.append("Review handover configuration, neighbors, and mobility consistency.")
+        if _is_high(payload, "kpi_3g_dropcall_cs", 2):
+            checks.append("Inspect radio drops against sector alarms, feeders, and RF degradation.")
+        if _is_low(payload, "kpi_3g_cssr_ps", 95):
+            checks.append("Check accessibility weakness against radio access failures and admission issues.")
+
+    elif predicted_family == "Performance":
+        if _is_low(payload, "kpi_3g_throughput", 4000):
+            checks.append("Check whether low throughput is driven by congestion, load imbalance, or weak scheduling.")
+        if _is_low(payload, "kpi_3g_cssr_ps", 95):
+            checks.append("Review whether degraded setup success is reducing service performance perception.")
+        if _is_high_risk(payload):
+            checks.append("Validate whether user experience impact is already significant enough for rapid optimization.")
+
+    elif predicted_family == "Préventif":
+        if _has_repeated_pattern(payload):
+            checks.append("Confirm whether this weak pattern has appeared repeatedly and should be tracked proactively.")
+        if _is_low(payload, "kpi_3g_shosr", 95) or _is_low(payload, "kpi_3g_cssr_ps", 95):
+            checks.append("Check if weak KPI drift is an early sign of configuration or hardware degradation.")
+        if _is_low(payload, "kpi_3g_throughput", 4000):
+            checks.append("Review whether throughput degradation is recurring before becoming a major incident.")
+
+    return _unique(checks)
+
+
+def build_recommended_actions(
+    predicted_family: str,
+    payload: Dict[str, Any],
+    kpi_insights: List[str],
+) -> List[str]:
+    actions = list(_playbook_for_family(predicted_family)["actions"])
+
+    if payload.get("priorite") or payload.get("priorite_texte"):
+        actions.append("Apply escalation handling consistent with incident priority.")
+    if _has_repeated_pattern(payload):
+        actions.append("Reference similar historical cases before final closure.")
+    if _is_high_risk(payload):
+        actions.append("Escalate validation and remediation timing because the site risk is high.")
+
+    if predicted_family == "Transmission":
+        if _is_low(payload, "kpi_3g_throughput", 4000):
+            actions.append("Coordinate transport troubleshooting before applying radio-side parameter changes.")
+        if _is_high(payload, "kpi_3g_dropcall_cs", 2):
+            actions.append("Monitor voice stability immediately after transmission recovery.")
+
+    elif predicted_family == "Radio Access":
+        if _is_low(payload, "kpi_3g_shosr", 95) or _is_low(payload, "kpi_3g_cs_interrat_ho_sr", 95):
+            actions.append("Tune mobility and neighbor configuration if handover weakness is confirmed.")
+        if _is_high(payload, "kpi_3g_dropcall_cs", 2):
+            actions.append("Dispatch radio investigation for sector-level RF or hardware verification.")
+        if _is_low(payload, "kpi_3g_cssr_ps", 95):
+            actions.append("Validate accessibility recovery after radio-side corrective action.")
+
+    elif predicted_family == "Performance":
+        if _is_low(payload, "kpi_3g_throughput", 4000):
+            actions.append("Apply performance tuning and monitor throughput recovery on the impacted site.")
+        if _has_repeated_pattern(payload):
+            actions.append("Create optimization follow-up because the pattern appears recurrent.")
+
+    elif predicted_family == "Préventif":
+        actions.append("Keep the case documented as a preventive pattern for future reuse.")
+        if _has_repeated_pattern(payload):
+            actions.append("Schedule targeted preventive maintenance for the recurring degradation pattern.")
+
+    return _unique(actions)
+
+
+def build_draft_report(
+    ticket_id: str,
+    predicted_family: str,
+    confidence: float,
+    top_hypotheses: List[Dict[str, Any]],
+    kpi_insights: List[str],
+    recommended_checks: List[str],
+    recommended_actions: List[str],
+    payload: Dict[str, Any],
+) -> str:
+    site_name = payload.get("site_name") or payload.get("nom_du_site") or "Unknown site"
+    region = payload.get("region") or "Unknown region"
+    description = payload.get("ticket_text") or "No incident description provided."
+
+    hypotheses_text = "\n".join(
+        f"- {item['family']}: {item['probability']:.4f}"
+        for item in top_hypotheses
+    )
+    insights_text = "\n".join(f"- {x}" for x in kpi_insights)
+    checks_text = "\n".join(f"- {x}" for x in recommended_checks)
+    actions_text = "\n".join(f"- {x}" for x in recommended_actions)
+
+    confidence_note = (
+        "Low-confidence result: engineer review of top hypotheses is strongly recommended."
+        if confidence < 0.60
+        else "Confidence is reasonably usable for guided RCA review."
+    )
+
+    return f"""RCA Draft Report
+Ticket ID: {ticket_id}
+Site: {site_name}
+Region: {region}
+
+Incident Summary:
+{description}
+
+Predicted RCA Family:
+- {predicted_family}
+- Confidence: {confidence:.4f}
+- Interpretation: {confidence_note}
+
+Top Hypotheses:
+{hypotheses_text}
+
+KPI Insights:
+{insights_text}
+
+Recommended Checks:
+{checks_text}
+
+Recommended Actions:
+{actions_text}
+""".strip()
+
+
+def build_final_report(analysis, approval) -> str:
+    top_hypotheses = analysis.top3_hypotheses_json or []
+
+    hypotheses_text = "\n".join(
+        f"- {item.get('family')}: {float(item.get('probability', 0)) * 100:.2f}%"
+        for item in top_hypotheses
+    ) or "- None"
+
+    checks = approval.approved_checks_json or []
+    actions = approval.approved_actions_json or []
+    insights = analysis.kpi_insights_json or []
+
+    checks_text = (
+        "\n".join(f"{idx + 1}. {x}" for idx, x in enumerate(checks))
+        if checks
+        else "1. None"
+    )
+    actions_text = (
+        "\n".join(f"{idx + 1}. {x}" for idx, x in enumerate(actions))
+        if actions
+        else "1. None"
+    )
+    insights_text = "\n".join(f"- {x}" for x in insights) if insights else "- None"
+
+    chosen_family = approval.approved_family
+    model_family = analysis.predicted_family
+    confidence = float(analysis.confidence or 0.0)
+    confidence_percent = confidence * 100.0
+
+    conclusion = _playbook_for_family(chosen_family)["conclusion"]
+
+    if confidence >= 0.90:
+        confidence_label = "Very high confidence"
+        engineer_review_note = "The model output is strong and suitable for guided RCA validation."
+    elif confidence >= 0.75:
+        confidence_label = "High confidence"
+        engineer_review_note = "The model output is usable, with engineer confirmation recommended."
+    elif confidence >= 0.60:
+        confidence_label = "Medium confidence"
+        engineer_review_note = "The model output should be reviewed carefully before operational closure."
+    else:
+        confidence_label = "Low confidence"
+        engineer_review_note = "The model output should be treated as exploratory and requires strong engineer validation."
+
+    if chosen_family == "Transmission":
+        root_cause_statement = (
+            "The approved RCA indicates a probable transmission or backhaul degradation. "
+            "The issue may affect throughput stability, packet delivery, latency, and service continuity."
+        )
+        risk_impact = (
+            "If not fixed, the incident may evolve into wider service instability, repeated degradation, "
+            "throughput collapse, packet loss, and possible cascading impact on dependent sites."
+        )
+        estimated_fix_window = "0-4 hours for critical validation, then continuous monitoring after recovery."
+
+    elif chosen_family == "Radio Access":
+        root_cause_statement = (
+            "The approved RCA indicates a probable radio access degradation. "
+            "The issue may affect accessibility, handover behavior, dropped calls, or sector-level quality."
+        )
+        risk_impact = (
+            "If not fixed, users may experience access failures, mobility failures, call drops, "
+            "and persistent radio quality degradation."
+        )
+        estimated_fix_window = "0-8 hours depending on site accessibility and radio investigation results."
+
+    elif chosen_family == "Performance":
+        root_cause_statement = (
+            "The approved RCA indicates a probable performance degradation. "
+            "The issue may be linked to congestion, traffic pressure, load imbalance, or optimization gaps."
+        )
+        risk_impact = (
+            "If not fixed, the site may continue producing poor user experience, low throughput, "
+            "high complaint volume, and repeated performance tickets."
+        )
+        estimated_fix_window = "4-24 hours depending on optimization or capacity actions."
+
+    elif chosen_family == "Préventif":
+        root_cause_statement = (
+            "The approved RCA indicates an early degradation pattern requiring preventive handling. "
+            "The objective is to avoid escalation into a major incident."
+        )
+        risk_impact = (
+            "If ignored, the pattern may become recurrent and later evolve into a confirmed service-impacting incident."
+        )
+        estimated_fix_window = "24-48 hours for preventive verification and follow-up monitoring."
+
+    else:
+        root_cause_statement = (
+            "The approved RCA indicates a probable operational degradation that requires further validation."
+        )
+        risk_impact = (
+            "If not fixed, the incident may continue affecting network stability and user experience."
+        )
+        estimated_fix_window = "To be estimated by the responsible operations team."
+
+    chart_summary = """Chart Summary for Frontend Visualization:
+- Hypothesis probability chart: use the top hypotheses and their confidence percentages.
+- KPI evidence chart: use KPI insights as supporting degraded indicators.
+- Risk timeline chart: show current risk, estimated escalation window, and expected impact if not fixed.
+"""
+
+    return f"""Final RCA Report
+Ticket ID: {analysis.ticket_id}
+Site ID: {analysis.site_id or "N/A"}
+Site Name: {analysis.site_name or "N/A"}
+Region: {analysis.region or "N/A"}
+Priority: {analysis.priority or "N/A"}
+
+1. Incident Description
+{analysis.description or "N/A"}
+
+2. Approved Root Cause
+Chosen hypothesis: {chosen_family}
+Model predicted family: {model_family}
+Model confidence: {confidence_percent:.2f}% ({confidence_label})
+
+Root cause statement:
+{root_cause_statement}
+
+3. Top Model Hypotheses
+{hypotheses_text}
+
+4. KPI Evidence and Supporting Signals
+{insights_text}
+
+5. Engineer Validation
+Approval status: {approval.approval_status}
+Approved by: {approval.approved_by}
+
+Engineer notes:
+{approval.engineer_notes or "No engineer notes provided."}
+
+Review note:
+{engineer_review_note}
+
+6. Recommended Checks / Diagnostic Steps
+{checks_text}
+
+7. Recommended Actions / Steps to Follow
+{actions_text}
+
+8. Risk If Not Fixed
+Estimated operational impact:
+{risk_impact}
+
+Estimated intervention window:
+{estimated_fix_window}
+
+9. Chart Data Guidance
+{chart_summary}
+
+10. Final Conclusion
+{conclusion}
+""".strip()
+
+
+def build_runbook_fields(analysis, approval, report_text: str) -> Dict[str, Any]:
+    family = approval.approved_family
+    conclusion = _playbook_for_family(family)["conclusion"]
+
+    return {
+        "incident_summary": analysis.description or analysis.draft_report,
+        "final_conclusion": approval.engineer_notes or conclusion,
+        "checks_json": approval.approved_checks_json or [],
+        "actions_json": approval.approved_actions_json or [],
+    }
+
+
+==================== rca_service\app\services\online_training_service.py ====================
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import joblib
+import numpy as np
+from sklearn.feature_extraction.text import HashingVectorizer
+from sklearn.linear_model import SGDClassifier
+from sqlalchemy.orm import Session
+
+from app.models import RunbookEntry
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ONLINE_ARTIFACTS_DIR = PROJECT_ROOT / "online_artifacts"
+
+ONLINE_MODEL_FILE = ONLINE_ARTIFACTS_DIR / "online_model.pkl"
+ONLINE_METADATA_FILE = ONLINE_ARTIFACTS_DIR / "online_model_metadata.json"
+
+RCA_CLASSES = [
+    "Performance",
+    "Préventif",
+    "Radio Access",
+    "Transmission",
+]
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _ensure_online_dir() -> None:
+    ONLINE_ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _safe_list(value: Any) -> List[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _join_text_parts(parts: List[Any]) -> str:
+    clean_parts = []
+
+    for part in parts:
+        if part is None:
+            continue
+
+        if isinstance(part, list):
+            clean_parts.extend(str(x) for x in part if x is not None)
+        else:
+            clean_parts.append(str(part))
+
+    return " ".join(x.strip() for x in clean_parts if str(x).strip())
+
+
+def _runbook_to_text(runbook: RunbookEntry) -> str:
+    return _join_text_parts(
+        [
+            runbook.incident_summary,
+            runbook.final_conclusion,
+            runbook.engineer_notes,
+            _safe_list(runbook.checks_json),
+            _safe_list(runbook.actions_json),
+            _safe_list(runbook.tags_json),
+            runbook.site_id,
+            runbook.site_name,
+            runbook.region,
+        ]
+    )
+
+
+def _payload_to_text(payload: Dict[str, Any]) -> str:
+    return _join_text_parts(
+        [
+            payload.get("ticket_text"),
+            payload.get("description"),
+            payload.get("incident_summary"),
+            payload.get("final_conclusion"),
+            payload.get("engineer_notes"),
+            payload.get("site_id"),
+            payload.get("site_name"),
+            payload.get("nom_du_site"),
+            payload.get("region"),
+            payload.get("priorite"),
+            payload.get("priorite_texte"),
+            payload.get("priority"),
+            payload.get("priority_text"),
+            payload.get("incident_status"),
+            payload.get("etat"),
+            payload.get("type_ticket"),
+            payload.get("tags"),
+            payload.get("checks"),
+            payload.get("actions"),
+        ]
+    )
+
+
+def _build_vectorizer() -> HashingVectorizer:
+    return HashingVectorizer(
+        n_features=2**16,
+        alternate_sign=False,
+        norm="l2",
+        lowercase=True,
+        ngram_range=(1, 2),
+    )
+
+
+def _build_classifier() -> SGDClassifier:
+    return SGDClassifier(
+        loss="log_loss",
+        penalty="l2",
+        alpha=0.0001,
+        random_state=42,
+        learning_rate="optimal",
+    )
+
+
+def _load_metadata() -> Dict[str, Any]:
+    if not ONLINE_METADATA_FILE.exists():
+        return {}
+
+    with ONLINE_METADATA_FILE.open("r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def _save_metadata(metadata: Dict[str, Any]) -> None:
+    _ensure_online_dir()
+
+    with ONLINE_METADATA_FILE.open("w", encoding="utf-8") as file:
+        json.dump(metadata, file, ensure_ascii=False, indent=2)
+
+
+def _load_online_bundle() -> Optional[Dict[str, Any]]:
+    if not ONLINE_MODEL_FILE.exists():
+        return None
+
+    return joblib.load(ONLINE_MODEL_FILE)
+
+
+def _save_online_bundle(bundle: Dict[str, Any]) -> None:
+    _ensure_online_dir()
+    joblib.dump(bundle, ONLINE_MODEL_FILE)
+
+
+def get_online_training_status() -> Dict[str, Any]:
+    metadata = _load_metadata()
+
+    return {
+        "status": "ready" if ONLINE_MODEL_FILE.exists() else "not_trained",
+        "mode": "experimental_online_learning",
+        "model_file": str(ONLINE_MODEL_FILE),
+        "metadata_file": str(ONLINE_METADATA_FILE),
+        "model_exists": ONLINE_MODEL_FILE.exists(),
+        "metadata_exists": ONLINE_METADATA_FILE.exists(),
+        "model_size_bytes": ONLINE_MODEL_FILE.stat().st_size if ONLINE_MODEL_FILE.exists() else 0,
+        "metadata": metadata,
+        "safety_note": (
+            "This online model is experimental and does not replace the production "
+            "Logistic Regression RCA model stored in artifacts/model.pkl."
+        ),
+    }
+
+
+def _query_feedback_runbooks(
+    db: Session,
+    reusable_only: bool = True,
+    approved_family: Optional[str] = None,
+    limit: int = 1000,
+) -> List[RunbookEntry]:
+    query = db.query(RunbookEntry)
+
+    if reusable_only:
+        query = query.filter(RunbookEntry.is_reusable == "yes")
+
+    if approved_family:
+        query = query.filter(RunbookEntry.approved_family == approved_family)
+
+    return query.order_by(RunbookEntry.created_at.asc()).limit(limit).all()
+
+
+def _prepare_training_examples(runbooks: List[RunbookEntry]) -> Tuple[List[str], List[str]]:
+    texts: List[str] = []
+    labels: List[str] = []
+
+    for runbook in runbooks:
+        label = runbook.approved_family
+
+        if label not in RCA_CLASSES:
+            continue
+
+        text = _runbook_to_text(runbook)
+
+        if not text.strip():
+            continue
+
+        texts.append(text)
+        labels.append(label)
+
+    return texts, labels
+
+
+def update_online_model_from_feedback(
+    db: Session,
+    reusable_only: bool = True,
+    approved_family: Optional[str] = None,
+    limit: int = 1000,
+) -> Dict[str, Any]:
+    runbooks = _query_feedback_runbooks(
+        db=db,
+        reusable_only=reusable_only,
+        approved_family=approved_family,
+        limit=limit,
+    )
+
+    texts, labels = _prepare_training_examples(runbooks)
+
+    if not texts:
+        raise ValueError("No valid feedback examples found for online training.")
+
+    bundle = _load_online_bundle()
+    metadata = _load_metadata()
+
+    if bundle is None:
+        vectorizer = _build_vectorizer()
+        classifier = _build_classifier()
+        is_new_model = True
+    else:
+        vectorizer = bundle["vectorizer"]
+        classifier = bundle["classifier"]
+        is_new_model = False
+
+    x_batch = vectorizer.transform(texts)
+    y_batch = np.array(labels, dtype=object)
+
+    if is_new_model:
+        classifier.partial_fit(
+            x_batch,
+            y_batch,
+            classes=np.array(RCA_CLASSES, dtype=object),
+        )
+    else:
+        classifier.partial_fit(x_batch, y_batch)
+
+    bundle = {
+        "vectorizer": vectorizer,
+        "classifier": classifier,
+        "classes": RCA_CLASSES,
+        "created_for": "experimental_online_rca_learning",
+    }
+
+    _save_online_bundle(bundle)
+
+    previous_samples = int(metadata.get("samples_seen_total", 0))
+    previous_batches = int(metadata.get("update_batches", 0))
+
+    class_distribution: Dict[str, int] = {}
+    for label in labels:
+        class_distribution[label] = class_distribution.get(label, 0) + 1
+
+    metadata = {
+        "online_model_name": "experimental_sgdclassifier_log_loss",
+        "status": "trained",
+        "model_type": "SGDClassifier",
+        "loss": "log_loss",
+        "classes": RCA_CLASSES,
+        "last_update_at_utc": _utc_now(),
+        "update_batches": previous_batches + 1,
+        "samples_seen_total": previous_samples + len(labels),
+        "last_batch_size": len(labels),
+        "last_batch_class_distribution": class_distribution,
+        "feedback_source": "approved reusable runbook_entries",
+        "filters": {
+            "reusable_only": reusable_only,
+            "approved_family": approved_family,
+            "limit": limit,
+        },
+        "safety_note": (
+            "This model is experimental. It is updated from human-approved RCA/runbook feedback "
+            "and does not replace the production offline-trained RCA model."
+        ),
+    }
+
+    _save_metadata(metadata)
+
+    return {
+        "status": "ok",
+        "message": "Experimental online RCA model updated successfully.",
+        "is_new_model": is_new_model,
+        "batch_size": len(labels),
+        "class_distribution": class_distribution,
+        "model_file": str(ONLINE_MODEL_FILE),
+        "metadata_file": str(ONLINE_METADATA_FILE),
+        "metadata": metadata,
+    }
+
+
+def predict_with_online_model(payload: Dict[str, Any], top_k: int = 3) -> Dict[str, Any]:
+    bundle = _load_online_bundle()
+
+    if bundle is None:
+        raise ValueError("Online model is not trained yet.")
+
+    vectorizer = bundle["vectorizer"]
+    classifier = bundle["classifier"]
+    classes = list(bundle.get("classes", RCA_CLASSES))
+
+    text = _payload_to_text(payload)
+
+    if not text.strip():
+        raise ValueError("Payload does not contain enough text for online prediction.")
+
+    x = vectorizer.transform([text])
+
+    if hasattr(classifier, "predict_proba"):
+        probabilities = classifier.predict_proba(x)[0]
+    else:
+        decision = classifier.decision_function(x)
+        probabilities = np.exp(decision) / np.sum(np.exp(decision), axis=1, keepdims=True)
+        probabilities = probabilities[0]
+
+    ranked_indices = np.argsort(probabilities)[::-1]
+    top_items = []
+
+    for idx in ranked_indices[:top_k]:
+        top_items.append(
+            {
+                "family": classes[idx],
+                "probability": round(float(probabilities[idx]), 6),
+            }
+        )
+
+    predicted_family = top_items[0]["family"]
+    confidence = top_items[0]["probability"]
+
+    return {
+        "status": "ok",
+        "mode": "experimental_online_model",
+        "predicted_family": predicted_family,
+        "confidence": confidence,
+        "top_hypotheses": top_items,
+        "input_text_preview": text[:500],
+        "note": (
+            "This prediction comes from the experimental online SGDClassifier model, "
+            "not from the production RCA Logistic Regression model."
+        ),
+    }
+
+
+==================== rca_service\app\services\backend_enrichment_service.py ====================
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
+from urllib.request import Request, urlopen
+
+import pandas as pd
+
+from app.services.ml_service import DEFAULT_TARGET_COLUMN, load_training_dataframe
+
+
+INCIDENT_SERVICE_BASE_URL = os.getenv(
+    "INCIDENT_SERVICE_BASE_URL",
+    "http://127.0.0.1:8002",
+).rstrip("/")
+
+KPI_SERVICE_BASE_URL = os.getenv(
+    "KPI_SERVICE_BASE_URL",
+    "http://127.0.0.1:8001",
+).rstrip("/")
+
+
+TARGET_COLUMNS = {
+    DEFAULT_TARGET_COLUMN,
+    "famille_de_problemes",
+    "rca_family",
+    "family",
+    "label",
+    "target",
+}
+
+
+def _http_get_json(url: str, authorization: Optional[str] = None, timeout: int = 8) -> Any:
+    headers = {
+        "Accept": "application/json",
+    }
+
+    if authorization:
+        headers["Authorization"] = authorization
+
+    request = Request(url, headers=headers, method="GET")
+
+    with urlopen(request, timeout=timeout) as response:
+        raw = response.read().decode("utf-8")
+        return json.loads(raw)
+
+
+def _safe_str(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_json_value(value: Any) -> Any:
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+
+    if hasattr(value, "item"):
+        return value.item()
+
+    return value
+
+
+def _safe_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: _safe_json_value(value) for key, value in payload.items()}
+
+
+def _extract_items(data: Any) -> List[Dict[str, Any]]:
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+
+    if isinstance(data, dict):
+        for key in ["results", "items", "data", "incidents", "sites"]:
+            value = data.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+
+        return [data]
+
+    return []
+
+
+def _field_matches(value: Any, query: str) -> bool:
+    return query.lower() in _safe_str(value).lower()
+
+
+def _incident_matches(incident: Dict[str, Any], ticket_number: str) -> bool:
+    candidates = [
+        incident.get("ticket_number"),
+        incident.get("id"),
+        incident.get("pk"),
+        incident.get("ticket_id"),
+        incident.get("reference"),
+        incident.get("title"),
+    ]
+
+    ticket_clean = _safe_str(ticket_number)
+
+    for value in candidates:
+        if _safe_str(value) == ticket_clean:
+            return True
+
+    for value in candidates:
+        if ticket_clean and ticket_clean.lower() in _safe_str(value).lower():
+            return True
+
+    return False
+
+
+def fetch_incident_from_service(
+    ticket_number: str,
+    authorization: Optional[str] = None,
+) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    trace: List[str] = []
+
+    encoded = quote(str(ticket_number))
+
+    urls = [
+        f"{INCIDENT_SERVICE_BASE_URL}/api/incidents/{encoded}/",
+        f"{INCIDENT_SERVICE_BASE_URL}/api/incidents/?search={encoded}",
+        f"{INCIDENT_SERVICE_BASE_URL}/api/incidents/?q={encoded}",
+        f"{INCIDENT_SERVICE_BASE_URL}/api/incidents/",
+    ]
+
+    for url in urls:
+        try:
+            trace.append(f"Trying incident_service URL: {url}")
+            data = _http_get_json(url, authorization=authorization)
+            items = _extract_items(data)
+
+            for item in items:
+                if _incident_matches(item, ticket_number):
+                    trace.append("Matched incident in incident_service.")
+                    return item, trace
+
+            if len(items) == 1 and _incident_matches(items[0], ticket_number):
+                trace.append("Matched single incident response.")
+                return items[0], trace
+
+        except Exception as exc:
+            trace.append(f"incident_service request failed: {url} | {exc}")
+
+    trace.append("No incident match found in incident_service.")
+    return None, trace
+
+
+def extract_site_candidates(incident: Dict[str, Any], ticket_number: str) -> List[str]:
+    raw_parts = [
+        incident.get("site_name"),
+        incident.get("site_id"),
+        incident.get("nom_du_site"),
+        incident.get("title"),
+        incident.get("description"),
+        incident.get("ticket_number"),
+        ticket_number,
+    ]
+
+    text = " ".join(_safe_str(part) for part in raw_parts if _safe_str(part))
+
+    patterns = [
+        r"\b[A-Z]{2,5}_\d{3,5}_[A-Z0-9]{1,4}\b",
+        r"\b[A-Z]{2,5}-\d{3,5}-[A-Z0-9]{1,5}\b",
+        r"\b[A-Z]{2,5}_\d{3,5}\b",
+        r"\b[A-Z]{2,5}-\d{3,5}\b",
+    ]
+
+    candidates: List[str] = []
+
+    for pattern in patterns:
+        for match in re.findall(pattern, text, flags=re.IGNORECASE):
+            value = match.upper().strip()
+            if value not in candidates:
+                candidates.append(value)
+
+    for field in ["site_name", "site_id", "nom_du_site"]:
+        value = _safe_str(incident.get(field))
+        if value and value.upper() not in candidates:
+            candidates.append(value.upper())
+
+    return candidates[:10]
+
+
+def build_payload_from_incident(
+    incident: Dict[str, Any],
+    ticket_number: str,
+) -> Dict[str, Any]:
+    ticket_id = (
+        incident.get("ticket_number")
+        or incident.get("ticket_id")
+        or ticket_number
+    )
+
+    title = _safe_str(incident.get("title"))
+    description = _safe_str(incident.get("description"))
+    status = _safe_str(incident.get("status"))
+    severity = _safe_str(incident.get("severity"))
+    priority = _safe_str(incident.get("priority"))
+    technology = _safe_str(incident.get("technology"))
+    problem_family = _safe_str(incident.get("problem_family"))
+    ticket_type = _safe_str(incident.get("ticket_type"))
+    root_cause_hint = _safe_str(incident.get("root_cause_hint"))
+
+    text_parts = [
+        title,
+        description,
+        f"Status: {status}" if status else "",
+        f"Severity: {severity}" if severity else "",
+        f"Priority: {priority}" if priority else "",
+        f"Technology: {technology}" if technology else "",
+        f"Problem family: {problem_family}" if problem_family else "",
+        f"Ticket type: {ticket_type}" if ticket_type else "",
+        f"Root cause hint: {root_cause_hint}" if root_cause_hint else "",
+    ]
+
+    ticket_text = ". ".join(part for part in text_parts if part)
+
+    site_candidates = extract_site_candidates(incident, ticket_number)
+    site_id = (
+        incident.get("site_name")
+        or incident.get("site_id")
+        or incident.get("nom_du_site")
+        or (site_candidates[0] if site_candidates else None)
+    )
+
+    region = incident.get("region_code")
+    if not region and site_id:
+        region = _safe_str(site_id).split("_")[0].split("-")[0]
+
+    health_score = _safe_float(incident.get("health_impact_score"))
+
+    payload = {
+        "ticket_id": str(ticket_id),
+        "ticket_text": ticket_text or f"Incident {ticket_id}",
+        "site_id": site_id,
+        "site_name": site_id,
+        "nom_du_site": site_id,
+        "region": region,
+        "etat": status or None,
+        "incident_status": status or None,
+        "type_ticket": ticket_type or None,
+        "priorite": priority or None,
+        "priorite_texte": severity or None,
+        "problem_family": problem_family or None,
+        "technology": technology or None,
+        "root_cause_hint": root_cause_hint or None,
+    }
+
+    if health_score is not None:
+        payload["incident_potential"] = round(min(max(health_score / 100.0, 0.0), 1.0), 4)
+
+    return _safe_payload(payload)
+
+
+def _site_matches_item(site_item: Dict[str, Any], candidates: List[str]) -> bool:
+    searchable_values = [
+        site_item.get("site_id"),
+        site_item.get("site_name"),
+        site_item.get("nom_du_site"),
+        site_item.get("nodeb_name"),
+        site_item.get("name"),
+        site_item.get("title"),
+        site_item.get("code"),
+    ]
+
+    for candidate in candidates:
+        candidate_clean = candidate.lower()
+
+        for value in searchable_values:
+            value_clean = _safe_str(value).lower()
+
+            if not value_clean:
+                continue
+
+            if candidate_clean == value_clean:
+                return True
+
+            if candidate_clean in value_clean or value_clean in candidate_clean:
+                return True
+
+    return False
+
+
+def fetch_kpi_context_from_service(
+    site_candidates: List[str],
+    authorization: Optional[str] = None,
+) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    trace: List[str] = []
+
+    if not site_candidates:
+        trace.append("No site candidates available for KPI lookup.")
+        return None, trace
+
+    urls: List[str] = []
+
+    for candidate in site_candidates[:3]:
+        encoded = quote(candidate)
+        urls.extend(
+            [
+                f"{KPI_SERVICE_BASE_URL}/api/cartography/sites/?search={encoded}",
+                f"{KPI_SERVICE_BASE_URL}/api/cartography/sites/?q={encoded}",
+                f"{KPI_SERVICE_BASE_URL}/api/cartography/sites/",
+            ]
+        )
+
+    seen_urls: List[str] = []
+
+    for url in urls:
+        if url in seen_urls:
+            continue
+        seen_urls.append(url)
+
+        try:
+            trace.append(f"Trying KPI service URL: {url}")
+            data = _http_get_json(url, authorization=authorization)
+            items = _extract_items(data)
+
+            for item in items:
+                if _site_matches_item(item, site_candidates):
+                    trace.append("Matched KPI/site context in kpi_service.")
+                    return item, trace
+
+        except Exception as exc:
+            trace.append(f"kpi_service request failed: {url} | {exc}")
+
+    trace.append("No KPI/site match found in kpi_service.")
+    return None, trace
+
+
+def merge_kpi_context(payload: Dict[str, Any], kpi_item: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not kpi_item:
+        return payload
+
+    enriched = dict(payload)
+
+    field_map = {
+        "avg_cssr_ps": "kpi_3g_cssr_ps",
+        "cssr_ps": "kpi_3g_cssr_ps",
+        "kpi_3g_cssr_ps": "kpi_3g_cssr_ps",
+        "avg_shosr": "kpi_3g_shosr",
+        "shosr": "kpi_3g_shosr",
+        "kpi_3g_shosr": "kpi_3g_shosr",
+        "avg_throughput_3g": "kpi_3g_throughput",
+        "throughput": "kpi_3g_throughput",
+        "kpi_3g_throughput": "kpi_3g_throughput",
+        "avg_drop_rate": "kpi_3g_dropcall_cs",
+        "drop_rate": "kpi_3g_dropcall_cs",
+        "kpi_3g_dropcall_cs": "kpi_3g_dropcall_cs",
+        "avg_cs_rab_setup_sr": "kpi_3g_cs_rab_setup_sr",
+        "kpi_3g_cs_rab_setup_sr": "kpi_3g_cs_rab_setup_sr",
+        "avg_cs_interrat_ho_sr": "kpi_3g_cs_interrat_ho_sr",
+        "kpi_3g_cs_interrat_ho_sr": "kpi_3g_cs_interrat_ho_sr",
+    }
+
+    for source_key, target_key in field_map.items():
+        value = _safe_float(kpi_item.get(source_key))
+        if value is not None:
+            enriched[target_key] = value
+
+    if not enriched.get("site_id"):
+        enriched["site_id"] = (
+            kpi_item.get("site_id")
+            or kpi_item.get("nodeb_name")
+            or kpi_item.get("site_name")
+            or kpi_item.get("name")
+        )
+
+    if not enriched.get("site_name"):
+        enriched["site_name"] = (
+            kpi_item.get("site_name")
+            or kpi_item.get("nodeb_name")
+            or kpi_item.get("name")
+            or enriched.get("site_id")
+        )
+
+    if not enriched.get("nom_du_site"):
+        enriched["nom_du_site"] = enriched.get("site_name") or enriched.get("site_id")
+
+    if not enriched.get("region"):
+        enriched["region"] = kpi_item.get("region") or kpi_item.get("region_code")
+
+    health_score = _safe_float(kpi_item.get("health_score"))
+    if health_score is not None and "incident_potential" not in enriched:
+        enriched["incident_potential"] = round(min(max(health_score / 100.0, 0.0), 1.0), 4)
+
+    if kpi_item.get("status") and not enriched.get("incident_status"):
+        enriched["incident_status"] = kpi_item.get("status")
+
+    return _safe_payload(enriched)
+
+
+def find_rca_dataset_context(
+    ticket_number: str,
+    site_candidates: List[str],
+) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    trace: List[str] = []
+
+    try:
+        df = load_training_dataframe()
+    except Exception as exc:
+        trace.append(f"RCA dataset load failed: {exc}")
+        return None, trace
+
+    if df.empty:
+        trace.append("RCA dataset is empty.")
+        return None, trace
+
+    matches = pd.DataFrame()
+
+    if "ticket_id" in df.columns:
+        matches = df.loc[df["ticket_id"].astype(str) == str(ticket_number)]
+
+    if matches.empty and site_candidates:
+        searchable_columns = [
+            col
+            for col in ["site_id", "nom_du_site", "site_name", "ticket_text"]
+            if col in df.columns
+        ]
+
+        for candidate in site_candidates:
+            mask = df[searchable_columns].astype(str).apply(
+                lambda column: column.str.contains(candidate, case=False, na=False)
+            ).any(axis=1)
+            matches = df.loc[mask]
+
+            if not matches.empty:
+                break
+
+    if matches.empty:
+        trace.append("No RCA dataset match found.")
+        return None, trace
+
+    row = matches.iloc[0].copy()
+    drop_columns = [col for col in TARGET_COLUMNS if col in row.index]
+
+    payload = row.drop(labels=drop_columns, errors="ignore").to_dict()
+    payload = _safe_payload(payload)
+
+    payload["ticket_id"] = payload.get("ticket_id") or ticket_number
+    payload["ticket_text"] = payload.get("ticket_text") or f"RCA dataset ticket {ticket_number}"
+    payload["site_name"] = payload.get("site_name") or payload.get("nom_du_site") or payload.get("site_id")
+    payload["nom_du_site"] = payload.get("nom_du_site") or payload.get("site_name") or payload.get("site_id")
+    payload["region"] = payload.get("region") or _safe_str(payload.get("site_id")).split("_")[0]
+
+    trace.append(f"Matched RCA dataset context using ticket/site. dataset_ticket_id={payload.get('ticket_id')}")
+    return payload, trace
+
+
+def build_backend_enriched_payload(
+    ticket_number: str,
+    authorization: Optional[str] = None,
+) -> Dict[str, Any]:
+    incident, incident_trace = fetch_incident_from_service(
+        ticket_number=ticket_number,
+        authorization=authorization,
+    )
+
+    if incident:
+        payload = build_payload_from_incident(incident, ticket_number)
+    else:
+        payload = {
+            "ticket_id": str(ticket_number),
+            "ticket_text": f"Incident {ticket_number}",
+        }
+
+    site_candidates = extract_site_candidates(incident or payload, ticket_number)
+
+    kpi_context, kpi_trace = fetch_kpi_context_from_service(
+        site_candidates=site_candidates,
+        authorization=authorization,
+    )
+
+    payload = merge_kpi_context(payload, kpi_context)
+
+    dataset_context, dataset_trace = find_rca_dataset_context(
+        ticket_number=ticket_number,
+        site_candidates=site_candidates,
+    )
+
+    if dataset_context:
+        # Dataset context enriches missing KPI fields without overwriting incident text identity.
+        for key, value in dataset_context.items():
+            if key not in payload or payload.get(key) in [None, ""]:
+                payload[key] = value
+
+        for kpi_key in [
+            "kpi_3g_cssr_ps",
+            "kpi_3g_shosr",
+            "kpi_3g_throughput",
+            "kpi_3g_dropcall_cs",
+            "kpi_3g_cs_rab_setup_sr",
+            "kpi_3g_cs_interrat_ho_sr",
+            "incident_potential",
+            "matched_incident_count",
+            "incident_mapping_confidence",
+            "worst_priority_code",
+            "engineering_record_count",
+            "frequency_band",
+        ]:
+            if dataset_context.get(kpi_key) is not None:
+                payload[kpi_key] = dataset_context.get(kpi_key)
+
+    payload["ticket_id"] = payload.get("ticket_id") or str(ticket_number)
+    payload["ticket_text"] = payload.get("ticket_text") or f"Incident {ticket_number}"
+
+    enrichment_trace = {
+        "incident_service": incident_trace,
+        "site_candidates": site_candidates,
+        "kpi_service": kpi_trace,
+        "rca_dataset": dataset_trace,
+        "enrichment_result": {
+            "incident_found": incident is not None,
+            "kpi_context_found": kpi_context is not None,
+            "rca_dataset_context_found": dataset_context is not None,
+            "used_fallback_text_only": incident is None and kpi_context is None and dataset_context is None,
+        },
+    }
+
+    return {
+        "payload": _safe_payload(payload),
+        "source_incident": incident,
+        "kpi_context": kpi_context,
+        "dataset_context": dataset_context,
+        "enrichment_trace": enrichment_trace,
+    }
+
+
+==================== rca_service\app\services\rca_enrichment_service.py ====================
+
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _pct(value: float) -> float:
+    return round(float(value) * 100.0, 2)
+
+
+def confidence_label(confidence: float) -> str:
+    if confidence >= 0.90:
+        return "very_high"
+    if confidence >= 0.75:
+        return "high"
+    if confidence >= 0.60:
+        return "medium"
+    return "low"
+
+
+def build_root_cause_summary(
+    predicted_family: str,
+    confidence: float,
+    payload: Dict[str, Any],
+    kpi_insights: List[str],
+) -> Dict[str, Any]:
+    site_name = payload.get("site_name") or payload.get("nom_du_site") or "Unknown site"
+    priority = payload.get("priorite_texte") or payload.get("priorite") or "Unknown priority"
+
+    if predicted_family == "Transmission":
+        root_cause = (
+            "The most probable root cause is a transmission or backhaul degradation "
+            "impacting service continuity and throughput stability."
+        )
+    elif predicted_family == "Radio Access":
+        root_cause = (
+            "The most probable root cause is a radio access degradation affecting "
+            "accessibility, mobility, or sector-level service quality."
+        )
+    elif predicted_family == "Performance":
+        root_cause = (
+            "The most probable root cause is a performance degradation linked to "
+            "traffic pressure, congestion, or optimization gaps."
+        )
+    elif predicted_family == "Préventif":
+        root_cause = (
+            "The case appears to be an early degradation pattern that should be handled "
+            "preventively before it becomes a major incident."
+        )
+    else:
+        root_cause = (
+            "The root cause remains uncertain and requires additional engineer validation."
+        )
+
+    return {
+        "site_name": site_name,
+        "priority": priority,
+        "predicted_family": predicted_family,
+        "confidence": round(float(confidence), 4),
+        "confidence_percent": _pct(confidence),
+        "confidence_label": confidence_label(confidence),
+        "root_cause": root_cause,
+        "evidence_summary": (
+            kpi_insights[:3]
+            if kpi_insights
+            else ["Limited KPI evidence was provided for this analysis."]
+        ),
+    }
+
+
+def build_risk_if_not_fixed(
+    predicted_family: str,
+    confidence: float,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    incident_potential = _safe_float(payload.get("incident_potential")) or 0.0
+    matched_count = _safe_float(payload.get("matched_incident_count")) or 0.0
+    priority = str(payload.get("priorite") or "").upper()
+    priority_text = str(payload.get("priorite_texte") or "").lower()
+
+    base_score = 35.0
+
+    if confidence >= 0.90:
+        base_score += 20.0
+    elif confidence >= 0.75:
+        base_score += 14.0
+    elif confidence >= 0.60:
+        base_score += 8.0
+
+    base_score += min(25.0, incident_potential * 25.0)
+    base_score += min(15.0, matched_count * 3.0)
+
+    if priority in {"P1", "P2"} or "critique" in priority_text or "élevée" in priority_text or "elevee" in priority_text:
+        base_score += 15.0
+
+    risk_score = max(0.0, min(100.0, base_score))
+
+    if risk_score >= 85:
+        risk_level = "critical"
+        estimated_time_to_impact = "0-4 hours"
+        escalation = "Immediate escalation is recommended."
+    elif risk_score >= 70:
+        risk_level = "high"
+        estimated_time_to_impact = "4-12 hours"
+        escalation = "Prioritize remediation during the current shift."
+    elif risk_score >= 50:
+        risk_level = "medium"
+        estimated_time_to_impact = "12-24 hours"
+        escalation = "Monitor closely and schedule corrective action."
+    else:
+        risk_level = "low"
+        estimated_time_to_impact = "24-48 hours"
+        escalation = "Continue observation and validate if symptoms persist."
+
+    family_impact = {
+        "Transmission": "Possible service instability, packet loss, throughput collapse, and cascading site degradation.",
+        "Radio Access": "Possible access failures, dropped calls, mobility degradation, and user experience impact.",
+        "Performance": "Possible congestion, slow throughput, poor user experience, and repeated complaints.",
+        "Préventif": "Possible evolution from early warning pattern to operational incident if ignored.",
+    }.get(
+        predicted_family,
+        "Possible operational degradation if the issue is not investigated.",
+    )
+
+    return {
+        "risk_level": risk_level,
+        "risk_score": round(risk_score, 2),
+        "estimated_time_to_impact": estimated_time_to_impact,
+        "impact_if_not_fixed": family_impact,
+        "escalation_advice": escalation,
+    }
+
+
+def build_hypothesis_chart_data(top_hypotheses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [
+        {
+            "label": item.get("family", "Unknown"),
+            "value": _pct(float(item.get("probability", 0.0))),
+            "raw_probability": round(float(item.get("probability", 0.0)), 4),
+        }
+        for item in top_hypotheses
+    ]
+
+
+def build_kpi_evidence_chart_data(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    metrics = [
+        {
+            "label": "CSSR PS",
+            "value": _safe_float(payload.get("kpi_3g_cssr_ps")),
+            "threshold": 95.0,
+            "direction": "low_is_bad",
+        },
+        {
+            "label": "SHOSR",
+            "value": _safe_float(payload.get("kpi_3g_shosr")),
+            "threshold": 95.0,
+            "direction": "low_is_bad",
+        },
+        {
+            "label": "Throughput",
+            "value": _safe_float(payload.get("kpi_3g_throughput")),
+            "threshold": 4000.0,
+            "direction": "low_is_bad",
+        },
+        {
+            "label": "Drop Call CS",
+            "value": _safe_float(payload.get("kpi_3g_dropcall_cs")),
+            "threshold": 2.0,
+            "direction": "high_is_bad",
+        },
+        {
+            "label": "CS RAB Setup",
+            "value": _safe_float(payload.get("kpi_3g_cs_rab_setup_sr")),
+            "threshold": 95.0,
+            "direction": "low_is_bad",
+        },
+        {
+            "label": "InterRAT HO",
+            "value": _safe_float(payload.get("kpi_3g_cs_interrat_ho_sr")),
+            "threshold": 95.0,
+            "direction": "low_is_bad",
+        },
+    ]
+
+    chart = []
+
+    for metric in metrics:
+        value = metric["value"]
+        threshold = metric["threshold"]
+
+        if value is None:
+            continue
+
+        if metric["direction"] == "low_is_bad":
+            if threshold <= 0:
+                severity_score = 0.0
+            else:
+                severity_score = max(0.0, min(100.0, ((threshold - value) / threshold) * 100.0))
+        else:
+            if threshold <= 0:
+                severity_score = 0.0
+            else:
+                severity_score = max(0.0, min(100.0, ((value - threshold) / threshold) * 100.0))
+
+        chart.append(
+            {
+                "label": metric["label"],
+                "value": round(value, 2),
+                "threshold": threshold,
+                "severity_score": round(severity_score, 2),
+                "status": "degraded" if severity_score > 0 else "normal",
+            }
+        )
+
+    return chart
+
+
+def build_risk_timeline_chart_data(risk: Dict[str, Any]) -> List[Dict[str, Any]]:
+    current = float(risk.get("risk_score", 0.0))
+
+    return [
+        {"label": "Now", "risk_score": round(current, 2)},
+        {"label": "+4h", "risk_score": round(min(100.0, current + 8.0), 2)},
+        {"label": "+12h", "risk_score": round(min(100.0, current + 16.0), 2)},
+        {"label": "+24h", "risk_score": round(min(100.0, current + 25.0), 2)},
+    ]
+
+
+def build_chart_payload(
+    top_hypotheses: List[Dict[str, Any]],
+    payload: Dict[str, Any],
+    risk: Dict[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "hypothesis_probability": build_hypothesis_chart_data(top_hypotheses),
+        "kpi_evidence": build_kpi_evidence_chart_data(payload),
+        "risk_timeline": build_risk_timeline_chart_data(risk),
+    }
+
+
+def build_enriched_rca_payload(
+    predicted_family: str,
+    confidence: float,
+    top_hypotheses: List[Dict[str, Any]],
+    payload: Dict[str, Any],
+    kpi_insights: List[str],
+) -> Dict[str, Any]:
+    root_cause_summary = build_root_cause_summary(
+        predicted_family=predicted_family,
+        confidence=confidence,
+        payload=payload,
+        kpi_insights=kpi_insights,
+    )
+
+    risk = build_risk_if_not_fixed(
+        predicted_family=predicted_family,
+        confidence=confidence,
+        payload=payload,
+    )
+
+    charts = build_chart_payload(
+        top_hypotheses=top_hypotheses,
+        payload=payload,
+        risk=risk,
+    )
+
+    return {
+        "root_cause_summary": root_cause_summary,
+        "risk_if_not_fixed": risk,
+        "charts": charts,
+        "explainability_status": {
+            "lime": "planned",
+            "shap": "planned",
+            "note": "Current response is model-probability and KPI-evidence based. LIME/SHAP will be added after the service is stable.",
+        },
+    }
+
+
+==================== rca_service\train_v2.py ====================
+
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List
+
+import joblib
+
+from app.services.ml_service import RCAModelService, DEFAULT_TARGET_COLUMN
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
+DEFAULT_ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
+
+REQUIRED_DATA_FILES = [
+    "master_sites_corrected_synthetic.csv",
+    "engineering_parameters_corrected_synthetic.csv",
+    "tickets_radio_synthetic_linked.csv",
+]
+
+ARTIFACT_FILENAMES = [
+    "model.pkl",
+    "feature_columns.json",
+    "numeric_columns.json",
+    "categorical_columns.json",
+    "all_null_columns.json",
+    "model_metadata.json",
+]
+
+
+def utc_now_label() -> str:
+    return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+
+
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def validate_data_files(data_dir: Path) -> None:
+    missing = [
+        filename
+        for filename in REQUIRED_DATA_FILES
+        if not (data_dir / filename).exists()
+    ]
+
+    if missing:
+        raise FileNotFoundError(
+            "Missing required RCA training data files: "
+            + ", ".join(missing)
+            + f" in {data_dir}"
+        )
+
+
+def backup_existing_artifacts(artifacts_dir: Path) -> Path | None:
+    existing_files = [
+        artifacts_dir / filename
+        for filename in ARTIFACT_FILENAMES
+        if (artifacts_dir / filename).exists()
+    ]
+
+    if not existing_files:
+        return None
+
+    backup_dir = artifacts_dir.parent / f"artifacts_backup_{utc_now_label()}"
+    ensure_dir(backup_dir)
+
+    for file_path in existing_files:
+        shutil.copy2(file_path, backup_dir / file_path.name)
+
+    return backup_dir
+
+
+def save_json(path: Path, payload: Any) -> None:
+    with path.open("w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
+
+
+def get_classifier_classes(service: RCAModelService) -> List[str]:
+    if service.model is None:
+        return []
+
+    classifier = service.model.named_steps.get("classifier")
+
+    if classifier is not None and hasattr(classifier, "classes_"):
+        return classifier.classes_.tolist()
+
+    return []
+
+
+def build_metadata(
+    service: RCAModelService,
+    train_info: Dict[str, Any],
+    data_dir: Path,
+    artifacts_dir: Path,
+    model_file: Path,
+) -> Dict[str, Any]:
+    classes = get_classifier_classes(service)
+
+    metadata = {
+        "model_name": "v2_rca_logistic_regression",
+        "model_version": f"v2-{utc_now_label()}",
+        "trained_at_utc": datetime.now(timezone.utc).isoformat(),
+        "target_column": service.target_column,
+        "rows": train_info.get("rows"),
+        "classes": classes,
+        "feature_count": len(service.training_feature_columns),
+        "numeric_feature_count": len(service.numeric_columns),
+        "categorical_feature_count": len(service.categorical_columns),
+        "text_column": service.text_column,
+        "all_null_columns": service.all_null_columns,
+        "train_info": train_info,
+        "artifacts": {
+            "artifacts_dir": str(artifacts_dir),
+            "model": model_file.name,
+            "feature_columns": "feature_columns.json",
+            "numeric_columns": "numeric_columns.json",
+            "categorical_columns": "categorical_columns.json",
+            "all_null_columns": "all_null_columns.json",
+            "metadata": "model_metadata.json",
+        },
+        "data": {
+            "data_dir": str(data_dir),
+            "sources": REQUIRED_DATA_FILES,
+        },
+        "notes": [
+            "Offline training pipeline for the RCA V2 service.",
+            "The FastAPI service loads these artifacts at startup.",
+            "Human-approved RCA/runbook entries can be used later as feedback for retraining.",
+            "True online incremental learning is planned as a future extension using SGDClassifier(log_loss).",
+        ],
+    }
+
+    return metadata
+
+
+def train_and_save(
+    data_dir: Path = DEFAULT_DATA_DIR,
+    artifacts_dir: Path = DEFAULT_ARTIFACTS_DIR,
+    create_backup: bool = True,
+) -> Dict[str, Any]:
+    data_dir = data_dir.resolve()
+    artifacts_dir = artifacts_dir.resolve()
+
+    validate_data_files(data_dir)
+    ensure_dir(artifacts_dir)
+
+    backup_dir = None
+    if create_backup:
+        backup_dir = backup_existing_artifacts(artifacts_dir)
+
+    model_file = artifacts_dir / "model.pkl"
+    feature_columns_file = artifacts_dir / "feature_columns.json"
+    numeric_columns_file = artifacts_dir / "numeric_columns.json"
+    categorical_columns_file = artifacts_dir / "categorical_columns.json"
+    all_null_columns_file = artifacts_dir / "all_null_columns.json"
+    metadata_file = artifacts_dir / "model_metadata.json"
+
+    service = RCAModelService(
+        data_dir=data_dir,
+        target_column=DEFAULT_TARGET_COLUMN,
+    )
+
+    train_info = service.train()
+
+    if service.model is None:
+        raise RuntimeError("Training completed but no model was produced.")
+
+    joblib.dump(service.model, model_file)
+
+    save_json(feature_columns_file, service.training_feature_columns)
+    save_json(numeric_columns_file, service.numeric_columns)
+    save_json(categorical_columns_file, service.categorical_columns)
+    save_json(all_null_columns_file, service.all_null_columns)
+
+    metadata = build_metadata(
+        service=service,
+        train_info=train_info,
+        data_dir=data_dir,
+        artifacts_dir=artifacts_dir,
+        model_file=model_file,
+    )
+    save_json(metadata_file, metadata)
+
+    result = {
+        "status": "ok",
+        "message": "V2 RCA model trained and artifacts saved successfully.",
+        "data_dir": str(data_dir),
+        "artifacts_dir": str(artifacts_dir),
+        "backup_dir": str(backup_dir) if backup_dir else None,
+        "model_file": str(model_file),
+        "rows": train_info.get("rows"),
+        "classes": metadata["classes"],
+        "feature_count": len(service.training_feature_columns),
+        "numeric_feature_count": len(service.numeric_columns),
+        "categorical_feature_count": len(service.categorical_columns),
+        "all_null_columns": service.all_null_columns,
+        "metadata_file": str(metadata_file),
+    }
+
+    return result
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Offline training pipeline for the V2 RCA model."
+    )
+
+    parser.add_argument(
+        "--data-dir",
+        default=str(DEFAULT_DATA_DIR),
+        help="Directory containing RCA CSV training files.",
+    )
+
+    parser.add_argument(
+        "--artifacts-dir",
+        default=str(DEFAULT_ARTIFACTS_DIR),
+        help="Directory where trained model artifacts will be saved.",
+    )
+
+    parser.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Disable backup of existing artifacts before overwriting.",
+    )
+
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+
+    result = train_and_save(
+        data_dir=Path(args.data_dir),
+        artifacts_dir=Path(args.artifacts_dir),
+        create_backup=not args.no_backup,
+    )
+
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+==================== rca_service\evaluate_v2.py ====================
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List
+
+import numpy as np
+import pandas as pd
+from sklearn.base import clone
+from sklearn.metrics import (
+    accuracy_score,
+    balanced_accuracy_score,
+    classification_report,
+    confusion_matrix,
+    log_loss,
+)
+from sklearn.model_selection import train_test_split
+
+from app.services.ml_service import (
+    DEFAULT_TARGET_COLUMN,
+    get_service,
+    load_model_artifacts,
+    load_training_dataframe,
+)
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+ARTIFACTS_DIR = PROJECT_ROOT / "artifacts"
+EVALUATION_FILE = ARTIFACTS_DIR / "model_evaluation.json"
+
+
+DATE_COLUMNS = [
+    "date_debut",
+    "date_d_acquittement",
+    "date_de_reparation",
+    "date_de_cloture",
+]
+
+TEXT_BUILD_COLUMNS = [
+    "ticket_text",
+    "origine",
+    "etat",
+    "type_ticket",
+    "priorite",
+    "identifiant_n_1",
+    "nom_du_site",
+    "priorite_texte",
+    "mapping_source",
+    "site_name",
+    "region",
+    "incident_match_source",
+    "incident_status",
+    "worst_priority_code",
+    "worst_priority_text",
+    "frequency_band",
+]
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, np.generic):
+        return value.item()
+
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+
+    return value
+
+
+def _add_date_features(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    parsed_dates: Dict[str, pd.Series] = {}
+
+    for col in DATE_COLUMNS:
+        if col in df.columns:
+            parsed = pd.to_datetime(
+                df[col],
+                errors="coerce",
+                utc=True,
+                dayfirst=True,
+            )
+        else:
+            parsed = pd.Series(pd.NaT, index=df.index)
+
+        parsed_dates[col] = parsed
+
+        df[f"{col}_year"] = parsed.dt.year.fillna(0).astype(int)
+        df[f"{col}_month"] = parsed.dt.month.fillna(0).astype(int)
+        df[f"{col}_day"] = parsed.dt.day.fillna(0).astype(int)
+        df[f"{col}_hour"] = parsed.dt.hour.fillna(0).astype(int)
+        df[f"{col}_minute"] = parsed.dt.minute.fillna(0).astype(int)
+        df[f"{col}_weekday"] = parsed.dt.weekday.fillna(0).astype(int)
+
+    date_debut = parsed_dates.get("date_debut")
+    date_ack = parsed_dates.get("date_d_acquittement")
+    date_repair = parsed_dates.get("date_de_reparation")
+    date_close = parsed_dates.get("date_de_cloture")
+
+    df["minutes_to_ack"] = (
+        ((date_ack - date_debut).dt.total_seconds() / 60.0).fillna(0)
+        if date_debut is not None and date_ack is not None
+        else 0
+    )
+
+    df["minutes_to_repair"] = (
+        ((date_repair - date_debut).dt.total_seconds() / 60.0).fillna(0)
+        if date_debut is not None and date_repair is not None
+        else 0
+    )
+
+    df["minutes_to_close"] = (
+        ((date_close - date_debut).dt.total_seconds() / 60.0).fillna(0)
+        if date_debut is not None and date_close is not None
+        else 0
+    )
+
+    return df
+
+
+def _build_combined_text(df: pd.DataFrame, text_column: str) -> pd.DataFrame:
+    df = df.copy()
+
+    existing_text_columns = [col for col in TEXT_BUILD_COLUMNS if col in df.columns]
+
+    if not existing_text_columns:
+        df[text_column] = ""
+        return df
+
+    text_frame = df[existing_text_columns].copy()
+
+    for col in existing_text_columns:
+        text_frame[col] = text_frame[col].fillna("").astype(str)
+
+    df[text_column] = text_frame.apply(
+        lambda row: " ".join(
+            value.strip()
+            for value in row.tolist()
+            if value and value.strip() and value.strip().lower() != "nan"
+        ),
+        axis=1,
+    )
+
+    return df
+
+
+def _ensure_feature_columns(
+    df: pd.DataFrame,
+    feature_columns: List[str],
+    numeric_columns: List[str],
+    categorical_columns: List[str],
+    text_column: str,
+) -> pd.DataFrame:
+    df = _add_date_features(df)
+
+    if text_column in feature_columns:
+        df = _build_combined_text(df, text_column)
+
+    for col in feature_columns:
+        if col not in df.columns:
+            if col in numeric_columns:
+                df[col] = 0
+            else:
+                df[col] = ""
+
+    for col in numeric_columns:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    for col in categorical_columns:
+        if col in df.columns:
+            df[col] = df[col].fillna("").astype(str)
+
+    if text_column in df.columns:
+        df[text_column] = df[text_column].fillna("").astype(str)
+
+    # Extra safety: any object-like feature should not contain NaN.
+    for col in feature_columns:
+        if col in df.columns and col not in numeric_columns:
+            df[col] = df[col].fillna("").astype(str)
+
+    return df
+
+
+def _evaluate_predictions(
+    y_true,
+    y_pred,
+    y_proba,
+    classes,
+) -> Dict[str, Any]:
+    return {
+        "accuracy": round(float(accuracy_score(y_true, y_pred)), 6),
+        "balanced_accuracy": round(float(balanced_accuracy_score(y_true, y_pred)), 6),
+        "log_loss": round(float(log_loss(y_true, y_proba, labels=classes)), 6),
+        "classification_report": classification_report(
+            y_true,
+            y_pred,
+            labels=classes,
+            output_dict=True,
+            zero_division=0,
+        ),
+        "confusion_matrix": {
+            "labels": classes,
+            "matrix": confusion_matrix(y_true, y_pred, labels=classes).tolist(),
+        },
+    }
+
+
+def _compact_summary(result: Dict[str, Any]) -> Dict[str, Any]:
+    test_metrics = result["holdout_test_metrics"]
+
+    return {
+        "status": result["status"],
+        "evaluated_at_utc": result["evaluated_at_utc"],
+        "dataset": result["dataset"],
+        "split": result["split"],
+        "holdout_test_accuracy": test_metrics["accuracy"],
+        "holdout_test_balanced_accuracy": test_metrics["balanced_accuracy"],
+        "holdout_test_log_loss": test_metrics["log_loss"],
+        "holdout_test_confusion_matrix": test_metrics["confusion_matrix"],
+        "holdout_test_classification_report": test_metrics["classification_report"],
+        "evaluation_file": str(EVALUATION_FILE),
+    }
+
+
+def evaluate_model(
+    test_size: float = 0.2,
+    random_state: int = 42,
+) -> Dict[str, Any]:
+    ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    load_model_artifacts()
+    service = get_service()
+
+    if service.model is None:
+        raise RuntimeError("Model artifacts are not loaded.")
+
+    df = load_training_dataframe()
+
+    target_column = getattr(service, "target_column", DEFAULT_TARGET_COLUMN)
+
+    if target_column not in df.columns:
+        raise ValueError(f"Target column '{target_column}' not found in dataframe.")
+
+    feature_columns = list(service.training_feature_columns)
+    numeric_columns = list(service.numeric_columns)
+    categorical_columns = list(service.categorical_columns)
+    text_column = service.text_column
+
+    df = _ensure_feature_columns(
+        df=df,
+        feature_columns=feature_columns,
+        numeric_columns=numeric_columns,
+        categorical_columns=categorical_columns,
+        text_column=text_column,
+    )
+
+    missing_features = [col for col in feature_columns if col not in df.columns]
+    if missing_features:
+        raise ValueError(
+            "Some training feature columns are still missing after feature engineering: "
+            + ", ".join(missing_features[:30])
+        )
+
+    x = df[feature_columns].copy()
+    y = df[target_column].astype(str).copy()
+
+    classifier = service.model.named_steps.get("classifier")
+    if classifier is not None and hasattr(classifier, "classes_"):
+        classes = [str(item) for item in classifier.classes_.tolist()]
+    else:
+        classes = sorted(y.unique().tolist())
+
+    x_train, x_test, y_train, y_test = train_test_split(
+        x,
+        y,
+        test_size=test_size,
+        random_state=random_state,
+        stratify=y,
+    )
+
+    evaluation_model = clone(service.model)
+    evaluation_model.fit(x_train, y_train)
+
+    y_train_pred = evaluation_model.predict(x_train)
+    y_test_pred = evaluation_model.predict(x_test)
+
+    y_train_proba = evaluation_model.predict_proba(x_train)
+    y_test_proba = evaluation_model.predict_proba(x_test)
+
+    full_pred = service.model.predict(x)
+    full_proba = service.model.predict_proba(x)
+
+    result = {
+        "status": "ok",
+        "evaluation_type": "holdout_split_plus_full_saved_model_check",
+        "evaluated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "dataset": {
+            "rows": int(len(df)),
+            "feature_count": int(len(feature_columns)),
+            "target_column": target_column,
+            "classes": classes,
+            "class_distribution": {
+                str(label): int(count)
+                for label, count in y.value_counts().sort_index().items()
+            },
+        },
+        "split": {
+            "test_size": test_size,
+            "random_state": random_state,
+            "train_rows": int(len(x_train)),
+            "test_rows": int(len(x_test)),
+        },
+        "holdout_train_metrics": _evaluate_predictions(
+            y_train,
+            y_train_pred,
+            y_train_proba,
+            classes,
+        ),
+        "holdout_test_metrics": _evaluate_predictions(
+            y_test,
+            y_test_pred,
+            y_test_proba,
+            classes,
+        ),
+        "saved_model_full_dataset_metrics": _evaluate_predictions(
+            y,
+            full_pred,
+            full_proba,
+            classes,
+        ),
+        "interpretation_notes": [
+            "Holdout test metrics are the main indicator for model generalization.",
+            "Full dataset metrics are only a sanity check for the saved production model.",
+            "If full dataset metrics are much higher than holdout metrics, overfitting may be present.",
+            "Because the dataset is synthetic/enriched, results should be presented as prototype validation, not final production validation.",
+        ],
+    }
+
+    with EVALUATION_FILE.open("w", encoding="utf-8") as file:
+        json.dump(result, file, ensure_ascii=False, indent=2, default=_json_safe)
+
+    return result
+
+
+if __name__ == "__main__":
+    metrics = evaluate_model()
+    print(json.dumps(_compact_summary(metrics), ensure_ascii=False, indent=2, default=_json_safe))

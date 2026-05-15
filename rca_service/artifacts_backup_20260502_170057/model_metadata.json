@@ -1,0 +1,34 @@
+{
+  "model_name": "v2_rca_logistic_regression",
+  "trained_at_utc": "2026-04-23T16:04:26.999028+00:00",
+  "target_column": "famille_de_problemes",
+  "rows": 2043,
+  "classes": [
+    "Performance",
+    "Préventif",
+    "Radio Access",
+    "Transmission"
+  ],
+  "feature_count": 85,
+  "numeric_feature_count": 66,
+  "categorical_feature_count": 18,
+  "text_column": "combined_text",
+  "all_null_columns": [
+    "beamwidth",
+    "main_calculation_radius",
+    "sector_split_group_id"
+  ],
+  "artifacts": {
+    "model": "model.pkl",
+    "feature_columns": "feature_columns.json",
+    "numeric_columns": "numeric_columns.json",
+    "categorical_columns": "categorical_columns.json",
+    "all_null_columns": "all_null_columns.json",
+    "metadata": "model_metadata.json"
+  },
+  "data_sources": [
+    "master_sites_corrected_synthetic.csv",
+    "engineering_parameters_corrected_synthetic.csv",
+    "tickets_radio_synthetic_linked.csv"
+  ]
+}

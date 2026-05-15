@@ -1,0 +1,29 @@
+{
+  "online_model_name": "experimental_sgdclassifier_log_loss",
+  "status": "trained",
+  "model_type": "SGDClassifier",
+  "loss": "log_loss",
+  "classes": [
+    "Performance",
+    "Préventif",
+    "Radio Access",
+    "Transmission"
+  ],
+  "last_update_at_utc": "2026-05-04T00:32:27.170338+00:00",
+  "update_batches": 4,
+  "samples_seen_total": 46,
+  "last_batch_size": 17,
+  "last_batch_class_distribution": {
+    "Préventif": 5,
+    "Performance": 4,
+    "Transmission": 4,
+    "Radio Access": 4
+  },
+  "feedback_source": "approved reusable runbook_entries",
+  "filters": {
+    "reusable_only": true,
+    "approved_family": null,
+    "limit": 1000
+  },
+  "safety_note": "This model is experimental. It is updated from human-approved RCA/runbook feedback and does not replace the production offline-trained RCA model."
+}

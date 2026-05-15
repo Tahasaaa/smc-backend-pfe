@@ -1,0 +1,268 @@
+{
+  "status": "ok",
+  "evaluation_type": "holdout_split_plus_full_saved_model_check",
+  "evaluated_at_utc": "2026-05-04T01:11:00.427302+00:00",
+  "dataset": {
+    "rows": 2043,
+    "feature_count": 85,
+    "target_column": "famille_de_problemes",
+    "classes": [
+      "Performance",
+      "Préventif",
+      "Radio Access",
+      "Transmission"
+    ],
+    "class_distribution": {
+      "Performance": 537,
+      "Préventif": 550,
+      "Radio Access": 411,
+      "Transmission": 545
+    }
+  },
+  "split": {
+    "test_size": 0.2,
+    "random_state": 42,
+    "train_rows": 1634,
+    "test_rows": 409
+  },
+  "holdout_train_metrics": {
+    "accuracy": 1.0,
+    "balanced_accuracy": 1.0,
+    "log_loss": 0.004546,
+    "classification_report": {
+      "Performance": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 429.0
+      },
+      "Préventif": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 440.0
+      },
+      "Radio Access": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 329.0
+      },
+      "Transmission": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 436.0
+      },
+      "accuracy": 1.0,
+      "macro avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1634.0
+      },
+      "weighted avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 1634.0
+      }
+    },
+    "confusion_matrix": {
+      "labels": [
+        "Performance",
+        "Préventif",
+        "Radio Access",
+        "Transmission"
+      ],
+      "matrix": [
+        [
+          429,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          440,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          329,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          436
+        ]
+      ]
+    }
+  },
+  "holdout_test_metrics": {
+    "accuracy": 1.0,
+    "balanced_accuracy": 1.0,
+    "log_loss": 0.004655,
+    "classification_report": {
+      "Performance": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 108.0
+      },
+      "Préventif": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 110.0
+      },
+      "Radio Access": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 82.0
+      },
+      "Transmission": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 109.0
+      },
+      "accuracy": 1.0,
+      "macro avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 409.0
+      },
+      "weighted avg": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1-score": 1.0,
+        "support": 409.0
+      }
+    },
+    "confusion_matrix": {
+      "labels": [
+        "Performance",
+        "Préventif",
+        "Radio Access",
+        "Transmission"
+      ],
+      "matrix": [
+        [
+          108,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          110,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          82,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          109
+        ]
+      ]
+    }
+  },
+  "saved_model_full_dataset_metrics": {
+    "accuracy": 0.793441,
+    "balanced_accuracy": 0.790865,
+    "log_loss": 5.889522,
+    "classification_report": {
+      "Performance": {
+        "precision": 0.7822141560798548,
+        "recall": 0.8026070763500931,
+        "f1-score": 0.7922794117647058,
+        "support": 537.0
+      },
+      "Préventif": {
+        "precision": 1.0,
+        "recall": 0.6854545454545454,
+        "f1-score": 0.8133764832793959,
+        "support": 550.0
+      },
+      "Radio Access": {
+        "precision": 1.0,
+        "recall": 0.7469586374695864,
+        "f1-score": 0.8551532033426184,
+        "support": 411.0
+      },
+      "Transmission": {
+        "precision": 0.6262376237623762,
+        "recall": 0.9284403669724771,
+        "f1-score": 0.7479674796747967,
+        "support": 545.0
+      },
+      "accuracy": 0.7934410181106216,
+      "macro avg": {
+        "precision": 0.8521129449605577,
+        "recall": 0.7908651565616754,
+        "f1-score": 0.8021941445153793,
+        "support": 2043.0
+      },
+      "weighted avg": {
+        "precision": 0.8430487061994014,
+        "recall": 0.7934410181106216,
+        "f1-score": 0.7987867610953965,
+        "support": 2043.0
+      }
+    },
+    "confusion_matrix": {
+      "labels": [
+        "Performance",
+        "Préventif",
+        "Radio Access",
+        "Transmission"
+      ],
+      "matrix": [
+        [
+          431,
+          0,
+          0,
+          106
+        ],
+        [
+          50,
+          377,
+          0,
+          123
+        ],
+        [
+          31,
+          0,
+          307,
+          73
+        ],
+        [
+          39,
+          0,
+          0,
+          506
+        ]
+      ]
+    }
+  },
+  "interpretation_notes": [
+    "Holdout test metrics are the main indicator for model generalization.",
+    "Full dataset metrics are only a sanity check for the saved production model.",
+    "If full dataset metrics are much higher than holdout metrics, overfitting may be present.",
+    "Because the dataset is synthetic/enriched, results should be presented as prototype validation, not final production validation."
+  ]
+}

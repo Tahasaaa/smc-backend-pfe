@@ -1,0 +1,164 @@
+{
+  "status": "ok",
+  "evaluation_type": "multiclass_roc_auc_holdout",
+  "evaluated_at_utc": "2026-05-05T09:58:46.797449+00:00",
+  "dataset": {
+    "rows": 2043,
+    "feature_count": 85,
+    "target_column": "famille_de_problemes",
+    "classes": [
+      "Performance",
+      "Préventif",
+      "Radio Access",
+      "Transmission"
+    ],
+    "class_distribution": {
+      "Performance": 537,
+      "Préventif": 550,
+      "Radio Access": 411,
+      "Transmission": 545
+    }
+  },
+  "split": {
+    "test_size": 0.2,
+    "random_state": 42,
+    "train_rows": 1634,
+    "test_rows": 409
+  },
+  "roc_auc": {
+    "macro_ovr": 1.0,
+    "weighted_ovr": 1.0,
+    "macro_ovo": 1.0,
+    "weighted_ovo": 1.0,
+    "micro": 1.0,
+    "per_class": {
+      "Performance": 1.0,
+      "Préventif": 1.0,
+      "Radio Access": 1.0,
+      "Transmission": 1.0
+    }
+  },
+  "roc_curves": {
+    "Performance": {
+      "auc": 1.0,
+      "curve_points_sampled": [
+        {
+          "fpr": 0.0,
+          "tpr": 0.0
+        },
+        {
+          "fpr": 0.0,
+          "tpr": 0.009259
+        },
+        {
+          "fpr": 0.0,
+          "tpr": 1.0
+        },
+        {
+          "fpr": 1.0,
+          "tpr": 1.0
+        }
+      ],
+      "threshold_count": 4
+    },
+    "Préventif": {
+      "auc": 1.0,
+      "curve_points_sampled": [
+        {
+          "fpr": 0.0,
+          "tpr": 0.0
+        },
+        {
+          "fpr": 0.0,
+          "tpr": 0.009091
+        },
+        {
+          "fpr": 0.0,
+          "tpr": 1.0
+        },
+        {
+          "fpr": 1.0,
+          "tpr": 1.0
+        }
+      ],
+      "threshold_count": 4
+    },
+    "Radio Access": {
+      "auc": 1.0,
+      "curve_points_sampled": [
+        {
+          "fpr": 0.0,
+          "tpr": 0.0
+        },
+        {
+          "fpr": 0.0,
+          "tpr": 0.012195
+        },
+        {
+          "fpr": 0.0,
+          "tpr": 1.0
+        },
+        {
+          "fpr": 1.0,
+          "tpr": 1.0
+        }
+      ],
+      "threshold_count": 4
+    },
+    "Transmission": {
+      "auc": 1.0,
+      "curve_points_sampled": [
+        {
+          "fpr": 0.0,
+          "tpr": 0.0
+        },
+        {
+          "fpr": 0.0,
+          "tpr": 0.009174
+        },
+        {
+          "fpr": 0.0,
+          "tpr": 1.0
+        },
+        {
+          "fpr": 1.0,
+          "tpr": 1.0
+        }
+      ],
+      "threshold_count": 4
+    }
+  },
+  "micro_curve": {
+    "auc": 1.0,
+    "curve_points_sampled": [
+      {
+        "fpr": 0.0,
+        "tpr": 0.0
+      },
+      {
+        "fpr": 0.0,
+        "tpr": 0.002445
+      },
+      {
+        "fpr": 0.0,
+        "tpr": 1.0
+      },
+      {
+        "fpr": 1.0,
+        "tpr": 1.0
+      }
+    ],
+    "threshold_count": 4
+  },
+  "artifacts": {
+    "roc_evaluation_file": "C:\\Back-end-pfe\\smc-back\\rca_service\\artifacts\\model_roc_evaluation.json",
+    "roc_curve_image_file": "C:\\Back-end-pfe\\smc-back\\rca_service\\artifacts\\model_roc_curves.png",
+    "roc_curve_image_saved": true
+  },
+  "interpretation_notes": [
+    "ROC AUC evaluates how well the model separates each RCA family from the others.",
+    "For multiclass classification, One-vs-Rest and One-vs-One ROC AUC are reported.",
+    "AUC close to 1.0 means excellent separability on the evaluated dataset.",
+    "If AUC is perfect, it should be interpreted carefully because the dataset may be synthetic, enriched, or strongly separable."
+  ]
+}
